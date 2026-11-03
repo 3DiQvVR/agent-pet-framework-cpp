@@ -1,0 +1,367 @@
+// -----------------------------------------------------------------------------
+// PostgreSQL adapter skeleton (not compiled by default).
+//
+// Build with libpq:
+//   cl /std:c++17 /EHsc /I..\include postgres_database.cpp libpq.lib
+// or:
+//   g++ -std=c++17 -I../include postgres_database.cpp -lpq
+//
+// Then register it before constructing Runtime:
+//   DatabaseRegistry::registerFactory("postgres", [](const DatabaseConfig& c) {
+//       return std::make_unique<PostgresDatabase>(c);
+//   });
+// -----------------------------------------------------------------------------
+#include <libpq-fe.h>
+
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include "petcore/database.hpp"
+#include "petcore/util.hpp"
+
+namespace example {
+
+class PgResult {
+public:
+    explicit PgResult(PGresult* result) : result_(result) {}
+    ~PgResult() { if (result_) PQclear(result_); }
+    PgResult(const PgResult&) = delete;
+    PgResult& operator=(const PgResult&) = delete;
+    PGresult* get() const { return result_; }
+    void check() const {
+        if (!result_ || (PQresultStatus(result_) != PGRES_TUPLES_OK &&
+                         PQresultStatus(result_) != PGRES_COMMAND_OK)) {
+            throw petcore::DatabaseError(PQresultErrorMessage(result_));
+        }
+    }
+    int rows() const { return PQntuples(result_); }
+    std::string get(int row, int column) const {
+        return PQgetisnull(result_, row, column) ? "" : PQgetvalue(result_, row, column);
+    }
+private:
+    PGresult* result_;
+};
+
+class PostgresDatabase final : public petcore::IDatabase {
+public:
+    explicit PostgresDatabase(const petcore::DatabaseConfig& config) {
+        const std::string dsn = config.options.isObject() && config.options.find("dsn")
+                                    ? config.options.at("dsn").asString()
+                                    : "";
+        if (dsn.empty()) throw petcore::DatabaseError("database.options.dsn is required");
+        connection_ = PQconnectdb(dsn.c_str());
+        if (PQstatus(connection_) != CONNECTION_OK) {
+            const std::string message = PQerrorMessage(connection_);
+            PQfinish(connection_);
+            connection_ = nullptr;
+            throw petcore::DatabaseError("cannot connect to PostgreSQL: " + message);
+        }
+    }
+
+    ~PostgresDatabase() override { close(); }
+
+    void initialize() override {
+        execute(
+            "CREATE TABLE IF NOT EXISTS pc_sessions ("
+            " id VARCHAR(64) PRIMARY KEY,"
+            " character_id VARCHAR(64) NOT NULL,"
+            " title VARCHAR(200) NOT NULL,"
+            " summary TEXT,"
+            " summary_upto INTEGER DEFAULT 0,"
+            " state TEXT,"
+            " created_at VARCHAR(40),"
+            " updated_at VARCHAR(40))");
+        execute(
+            "CREATE TABLE IF NOT EXISTS pc_messages ("
+            " id VARCHAR(64) PRIMARY KEY,"
+            " session_id VARCHAR(64) NOT NULL,"
+            " seq INTEGER NOT NULL,"
+            " role VARCHAR(16) NOT NULL,"
+            " content TEXT,"
+            " tool_calls TEXT,"
+            " tool_call_id VARCHAR(64),"
+            " name VARCHAR(100),"
+            " created_at VARCHAR(40),"
+            " UNIQUE(session_id, seq))");
+        execute(
+            "CREATE TABLE IF NOT EXISTS pc_facts ("
+            " session_id VARCHAR(64) NOT NULL,"
+            " key VARCHAR(200) NOT NULL,"
+            " id VARCHAR(64),"
+            " value TEXT,"
+            " tags TEXT,"
+            " created_at VARCHAR(40),"
+            " updated_at VARCHAR(40),"
+            " PRIMARY KEY(session_id, key))");
+        execute(
+            "CREATE TABLE IF NOT EXISTS pc_characters ("
+            " id VARCHAR(64) PRIMARY KEY,"
+            " payload TEXT NOT NULL,"
+            " created_at VARCHAR(40),"
+            " updated_at VARCHAR(40))");
+    }
+
+    void close() override {
+        if (connection_) {
+            PQfinish(connection_);
+            connection_ = nullptr;
+        }
+    }
+
+    petcore::SessionRecord createSession(const std::string& characterId,
+                                         const std::string& title) override {
+        petcore::SessionRecord session;
+        session.id = petcore::util::uuid();
+        session.characterId = characterId;
+        session.title = title.empty() ? characterId : title;
+        session.createdAt = petcore::util::nowIso();
+        session.updatedAt = session.createdAt;
+        session.state = petcore::json::Value::object({});
+        const std::string sql =
+            "INSERT INTO pc_sessions(id, character_id, title, summary, summary_upto, state, created_at, updated_at)"
+            " VALUES($1,$2,$3,'',0,'{}',$4,$5)";
+        const char* params[] = {session.id.c_str(), session.characterId.c_str(),
+                                session.title.c_str(), session.createdAt.c_str(),
+                                session.updatedAt.c_str()};
+        executeParams(sql, params, 5);
+        return session;
+    }
+
+    std::optional<petcore::SessionRecord> getSession(const std::string& id) override {
+        const char* params[] = {id.c_str()};
+        PgResult result(execParams("SELECT id, character_id, title, summary, summary_upto, state,"
+                                   " created_at, updated_at FROM pc_sessions WHERE id=$1",
+                                   params, 1));
+        result.check();
+        if (result.rows() == 0) return std::nullopt;
+        return toSession(result, 0);
+    }
+
+    std::vector<petcore::SessionRecord> listSessions(std::size_t limit) override {
+        const std::string sql =
+            "SELECT id, character_id, title, summary, summary_upto, state, created_at, updated_at"
+            " FROM pc_sessions ORDER BY updated_at DESC LIMIT " +
+            std::to_string(limit == 0 ? 50 : limit);
+        PgResult result(exec(sql));
+        result.check();
+        std::vector<petcore::SessionRecord> sessions;
+        for (int i = 0; i < result.rows(); ++i) sessions.push_back(toSession(result, i));
+        return sessions;
+    }
+
+    void updateSession(const petcore::SessionRecord& session) override {
+        petcore::SessionRecord updated = session;
+        updated.updatedAt = petcore::util::nowIso();
+        const std::string state = session.state.dump();
+        const char* params[] = {session.characterId.c_str(), session.title.c_str(),
+                                session.summary.c_str(),
+                                std::to_string(session.summaryUpto).c_str(), state.c_str(),
+                                updated.updatedAt.c_str(), session.id.c_str()};
+        executeParams("UPDATE pc_sessions SET character_id=$1, title=$2, summary=$3,"
+                      " summary_upto=$4, state=$5, updated_at=$6 WHERE id=$7",
+                      params, 7);
+    }
+
+    petcore::MessageRecord appendMessage(const std::string& sessionId,
+                                         const petcore::Message& message) override {
+        petcore::MessageRecord record;
+        record.id = petcore::util::uuid();
+        record.message = message;
+        if (record.message.createdAt.empty()) record.message.createdAt = petcore::util::nowIso();
+        const char* seqParams[] = {sessionId.c_str()};
+        PgResult seqResult(execParams("SELECT COALESCE(MAX(seq),0)+1 FROM pc_messages WHERE session_id=$1",
+                                      seqParams, 1));
+        seqResult.check();
+        record.seq = std::stoi(seqResult.get(0, 0));
+        json::Value calls = json::Value::array({});
+        for (const auto& call : message.toolCalls) calls.push_back(call.toJson());
+        const std::string toolCalls = calls.dump();
+        const char* params[] = {record.id.c_str(), sessionId.c_str(),
+                                std::to_string(record.seq).c_str(), message.role.c_str(),
+                                message.content.c_str(), toolCalls.c_str(),
+                                message.toolCallId.c_str(), message.name.c_str(),
+                                record.message.createdAt.c_str()};
+        executeParams("INSERT INTO pc_messages(id, session_id, seq, role, content, tool_calls,"
+                      " tool_call_id, name, created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+                      params, 9);
+        return record;
+    }
+
+    std::vector<petcore::MessageRecord> getMessages(const std::string& sessionId,
+                                                    std::size_t limit, int afterSeq) override {
+        const std::string sql =
+            "SELECT id, seq, role, content, tool_calls, tool_call_id, name, created_at"
+            " FROM pc_messages WHERE session_id=$1 AND seq>$2 ORDER BY seq ASC" +
+            std::string(limit ? " LIMIT " + std::to_string(limit) : "");
+        const char* params[] = {sessionId.c_str(), std::to_string(afterSeq).c_str()};
+        PgResult result(execParams(sql, params, 2));
+        result.check();
+        std::vector<petcore::MessageRecord> messages;
+        for (int i = 0; i < result.rows(); ++i) {
+            petcore::MessageRecord record;
+            record.id = result.get(i, 0);
+            record.seq = std::stoi(result.get(i, 1));
+            json::Value tools = json::Value::array({});
+            try {
+                tools = json::Value::parse(result.get(i, 4).empty() ? "[]" : result.get(i, 4));
+            } catch (...) {
+            }
+            record.message = petcore::Message::fromJson(json::Value::object({
+                {"role", result.get(i, 2)},
+                {"content", result.get(i, 3)},
+                {"tool_calls", tools},
+                {"tool_call_id", result.get(i, 5)},
+                {"name", result.get(i, 6)},
+                {"created_at", result.get(i, 7)},
+            }));
+            messages.push_back(std::move(record));
+        }
+        return messages;
+    }
+
+    int countMessages(const std::string& sessionId) override {
+        const char* params[] = {sessionId.c_str()};
+        PgResult result(execParams("SELECT COUNT(*) FROM pc_messages WHERE session_id=$1", params, 1));
+        result.check();
+        return std::stoi(result.get(0, 0));
+    }
+
+    void upsertFact(const std::string& sessionId, const std::string& key,
+                    const std::string& value, const std::vector<std::string>& tags) override {
+        const std::string now = petcore::util::nowIso();
+        const std::string tagText = petcore::util::join(tags, ",");
+        const char* params[] = {sessionId.c_str(), key.c_str(), petcore::util::uuid().c_str(),
+                                value.c_str(), tagText.c_str(), now.c_str(), now.c_str()};
+        executeParams("INSERT INTO pc_facts(session_id, key, id, value, tags, created_at, updated_at)"
+                      " VALUES($1,$2,$3,$4,$5,$6,$7)"
+                      " ON CONFLICT(session_id, key) DO UPDATE SET value=$4, tags=$5, updated_at=$7",
+                      params, 7);
+    }
+
+    std::vector<petcore::FactRecord> listFacts(const std::string& sessionId) override {
+        const char* params[] = {sessionId.c_str()};
+        PgResult result(execParams("SELECT id, key, value, tags, created_at, updated_at"
+                                   " FROM pc_facts WHERE session_id=$1 ORDER BY key", params, 1));
+        result.check();
+        std::vector<petcore::FactRecord> facts;
+        for (int i = 0; i < result.rows(); ++i) {
+            petcore::FactRecord fact;
+            fact.sessionId = sessionId;
+            fact.id = result.get(i, 0);
+            fact.key = result.get(i, 1);
+            fact.value = result.get(i, 2);
+            const std::string tags = result.get(i, 3);
+            std::size_t start = 0;
+            while (start <= tags.size()) {
+                const auto comma = tags.find(',', start);
+                fact.tags.push_back(tags.substr(start, comma - start));
+                if (comma == std::string::npos) break;
+                start = comma + 1;
+            }
+            fact.createdAt = result.get(i, 4);
+            fact.updatedAt = result.get(i, 5);
+            facts.push_back(std::move(fact));
+        }
+        return facts;
+    }
+
+    void upsertCharacter(const petcore::CharacterRecord& character) override {
+        const std::string now = petcore::util::nowIso();
+        const char* params[] = {character.id.c_str(), character.payload.c_str(),
+                                now.c_str(), now.c_str()};
+        executeParams("INSERT INTO pc_characters(id, payload, created_at, updated_at)"
+                      " VALUES($1,$2,$3,$4)"
+                      " ON CONFLICT(id) DO UPDATE SET payload=$2, updated_at=$4",
+                      params, 4);
+    }
+
+    std::optional<petcore::CharacterRecord> getCharacter(const std::string& id) override {
+        const char* params[] = {id.c_str()};
+        PgResult result(execParams("SELECT payload, created_at, updated_at"
+                                   " FROM pc_characters WHERE id=$1", params, 1));
+        result.check();
+        if (result.rows() == 0) return std::nullopt;
+        petcore::CharacterRecord record;
+        record.id = id;
+        record.payload = result.get(0, 0);
+        record.createdAt = result.get(0, 1);
+        record.updatedAt = result.get(0, 2);
+        return record;
+    }
+
+    std::vector<petcore::CharacterRecord> listCharacters() override {
+        PgResult result(exec("SELECT id, payload, created_at, updated_at"
+                             " FROM pc_characters ORDER BY updated_at DESC"));
+        result.check();
+        std::vector<petcore::CharacterRecord> characters;
+        for (int i = 0; i < result.rows(); ++i) {
+            petcore::CharacterRecord record;
+            record.id = result.get(i, 0);
+            record.payload = result.get(i, 1);
+            record.createdAt = result.get(i, 2);
+            record.updatedAt = result.get(i, 3);
+            characters.push_back(std::move(record));
+        }
+        return characters;
+    }
+
+    bool deleteCharacter(const std::string& id) override {
+        const char* params[] = {id.c_str()};
+        PgResult result(execParams("DELETE FROM pc_characters WHERE id=$1", params, 1));
+        result.check();
+        return std::string(PQcmdTuples(result.get())) != "0";
+    }
+
+private:
+    void execute(const std::string& sql) {
+        PgResult result(PQexec(connection_, sql.c_str()));
+        result.check();
+    }
+
+    void executeParams(const std::string& sql, const char* const* params, int count) {
+        PgResult result(PQexecParams(connection_, sql.c_str(), count, nullptr, params, nullptr, nullptr, 0));
+        result.check();
+    }
+
+    PGresult* exec(const std::string& sql) { return PQexec(connection_, sql.c_str()); }
+
+    PGresult* execParams(const std::string& sql, const char* const* params, int count) {
+        return PQexecParams(connection_, sql.c_str(), count, nullptr, params, nullptr, nullptr, 0);
+    }
+
+    static petcore::SessionRecord toSession(const PgResult& result, int row) {
+        petcore::SessionRecord session;
+        session.id = result.get(row, 0);
+        session.characterId = result.get(row, 1);
+        session.title = result.get(row, 2);
+        session.summary = result.get(row, 3);
+        session.summaryUpto = std::stoi(result.get(row, 4).empty() ? "0" : result.get(row, 4));
+        try {
+            session.state = petcore::json::Value::parse(result.get(row, 5));
+        } catch (...) {
+            session.state = petcore::json::Value::object({});
+        }
+        session.createdAt = result.get(row, 6);
+        session.updatedAt = result.get(row, 7);
+        return session;
+    }
+
+    PGconn* connection_ = nullptr;
+};
+
+}  // namespace example
+
+namespace petcore {
+
+// Call this once, before constructing Runtime:
+//   petcore::registerPostgresDatabase();
+void registerPostgresDatabase() {
+    DatabaseRegistry::registerFactory("postgres", [](const DatabaseConfig& config) {
+        return std::make_unique<example::PostgresDatabase>(config);
+    });
+}
+
+}  // namespace petcore

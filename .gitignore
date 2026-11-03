@@ -1,0 +1,10 @@
+build/
+data/
+workspace/
+characters/
+_petcore_test_tmp/
+config.json
+_tools/
+*.tmp
+*.exe
+*.obj

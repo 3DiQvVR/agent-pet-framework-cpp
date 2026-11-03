@@ -1,0 +1,39 @@
+{
+  "llm": {
+    "provider": "deepseek",
+    "model": "deepseek-flash",
+    "base_url": "https://api.deepseek.com",
+    "api_key_env": "DEEPSEEK_API_KEY",
+    "temperature": 0.8,
+    "max_tokens": 1024,
+    "timeout": 60
+  },
+  "database": {
+    "adapter": "memory",
+    "path": "data/petcore.json",
+    "options": {}
+  },
+  "agent": {
+    "max_tool_rounds": 6,
+    "history_limit": 20,
+    "auto_summarize": true,
+    "summary_trigger": 40,
+    "max_prompt_chars": 6000,
+    "approval_required": []
+  },
+  "characters": {
+    "dirs": [
+      "cards"
+    ],
+    "user_dir": "characters"
+  },
+  "tools": {
+    "files_enabled": false,
+    "workspace": "workspace"
+  },
+  "ui": {
+    "host": "127.0.0.1",
+    "port": 8787,
+    "open_browser": true
+  }
+}

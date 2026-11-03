@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PetCore · 自主桌宠</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="ambient ambient-a"></div>
+  <div class="ambient ambient-b"></div>
+
+  <div id="app">
+    <aside class="sidebar glass">
+      <div class="brand">
+        <div class="brand-mark">◍</div>
+        <div>
+          <h1>PetCore</h1>
+          <p>自主桌宠控制台</p>
+        </div>
+      </div>
+
+      <nav class="page-nav" aria-label="功能页面">
+        <a href="/?page=chat" data-page-link="chat">◉ <span>对话</span></a>
+        <a href="/?page=characters" data-page-link="characters">✿ <span>角色卡</span></a>
+        <a href="/?page=sessions" data-page-link="sessions">▤ <span>会话记录</span></a>
+        <a href="/?page=memory" data-page-link="memory">◎ <span>长期记忆</span></a>
+        <a href="/?page=activity" data-page-link="activity">⌁ <span>Agent 轨迹</span></a>
+      </nav>
+
+      <div id="characterSection" class="section-head">
+        <span>选择角色</span>
+        <span class="head-right">
+          <span id="cardCount" class="count">0</span>
+          <button id="newCardBtn" class="add" type="button" title="新建角色卡">+</button>
+        </span>
+      </div>
+      <div id="cardList" class="card-list"></div>
+
+      <div id="sessionSection" class="section-head">
+        <span>最近会话</span>
+        <span id="sessionCount" class="count">0</span>
+      </div>
+      <div id="sessionList" class="session-list"></div>
+
+      <div class="sidebar-foot">
+        <span id="statusDot" class="dot"></span>
+        <span id="statusText">连接中…</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="crumb">桌面 / <strong id="crumbName">未选择角色</strong></div>
+        <div class="top-actions">
+          <span id="modelBadge" class="badge">mock</span>
+          <label class="speed-control" title="调节回复在屏幕上的显示速度">
+            <span>回复速度</span>
+            <input id="replySpeed" type="range" min="8" max="100" step="4" value="36" aria-label="回复显示速度" />
+            <output id="replySpeedValue" for="replySpeed">36 字/秒</output>
+          </label>
+          <button id="newChatBtn" class="ghost" type="button">+ 新对话</button>
+        </div>
+      </header>
+
+      <section class="stage glass" id="stage">
+        <div class="stage-grid"></div>
+        <div class="pet-wrap">
+          <div class="halo" id="halo"></div>
+          <div class="pet" id="petAvatar">🌱</div>
+          <div class="pet-meta">
+            <h2 id="petName">选择一只桌宠</h2>
+            <p id="petTagline">从左侧角色卡开始，或点“新对话”</p>
+            <span class="emotion-pill" id="emotionPill">待机</span>
+          </div>
+        </div>
+        <div class="bubble" id="bubble">你好呀，我在这里。</div>
+      </section>
+
+      <section class="chat glass">
+        <div id="messages" class="messages"></div>
+        <div id="typing" class="typing hidden">
+          <span></span><span></span><span></span>
+        </div>
+        <form id="composer" class="composer">
+          <button type="button" id="memoryBtn" class="icon-btn" title="查看记忆">◎</button>
+          <input id="input" autocomplete="off" placeholder="对桌宠说点什么…" />
+          <button type="submit" id="sendBtn" class="send">发送</button>
+        </form>
+        <div class="quick" id="quick"></div>
+      </section>
+    </main>
+
+    <aside id="tracePanel" class="trace-panel glass">
+      <div class="panel-head">
+        <h3>Agent 轨迹</h3>
+        <span id="traceCount" class="count">0</span>
+      </div>
+      <div id="trace" class="trace"></div>
+
+      <div class="panel-head memory-head">
+        <h3>长期记忆</h3>
+        <button id="refreshMemory" class="mini" type="button">刷新</button>
+      </div>
+      <div id="memory" class="memory"></div>
+    </aside>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <div id="cardModal" class="modal hidden">
+    <div class="modal-card glass">
+      <div class="modal-head">
+        <div>
+          <h2 id="modalTitle">自定义角色卡</h2>
+          <p>角色卡会写入当前数据库，可在下次启动时继续使用。</p>
+        </div>
+        <button id="modalClose" class="icon-btn" type="button">×</button>
+      </div>
+
+      <div class="modal-body">
+        <details class="card-help">
+          <summary>创建东方 Project 人物角色卡指南</summary>
+          <div class="card-help-content">
+            <p>填写人物名称与 ID（使用小写英文、数字、短横线或下划线），再用自己的话描述身份、性格、经历和说话方式。</p>
+            <p>建议先查阅 <a href="https://thwiki.cc/" target="_blank" rel="noopener noreferrer">THBWiki</a> 等资料核对设定；“人设 system”写角色核心，“说话风格”写语气，“边界”列出不应编造或越界的内容。</p>
+            <p>如需角色查询东方 Project 资料，在可用工具中勾选 <code>thbwiki_search</code>。保存后即可从左侧角色列表选择使用。此类自定义卡为粉丝创作，不代表官方设定或官方对话。</p>
+          </div>
+        </details>
+        <div class="form-grid">
+          <label>角色 ID
+            <input id="fId" placeholder="custom_cat" autocomplete="off" />
+          </label>
+          <label>名称
+            <input id="fName" placeholder="小煤球" autocomplete="off" />
+          </label>
+          <label class="wide">一句话介绍
+            <input id="fTagline" placeholder="住在桌角的夜间生物" autocomplete="off" />
+          </label>
+          <label>Emoji
+            <input id="fEmoji" placeholder="🐈‍⬛" maxlength="8" autocomplete="off" />
+          </label>
+          <label>主题色
+            <input id="fColor" type="color" value="#6ea8fe" />
+          </label>
+          <div class="wide portrait-field">
+            <label for="fPortrait">人物立绘（PNG、JPG/JPEG、WebP，最大 1.5 MB）</label>
+            <input id="fPortrait" type="file" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" />
+            <div class="portrait-preview-row">
+              <img id="portraitPreview" class="portrait-preview hidden" alt="立绘预览" />
+              <span id="portraitHint">未上传图片，将使用 Emoji 头像。</span>
+              <button id="clearPortrait" class="mini" type="button">移除立绘</button>
+            </div>
+          </div>
+          <label class="wide">问候语
+            <input id="fGreeting" placeholder="我来了，今天想聊什么？" autocomplete="off" />
+          </label>
+          <label class="wide">人设 system
+            <textarea id="fSystem" rows="4" placeholder="你是……，你的性格是……"></textarea>
+          </label>
+          <label class="wide">说话风格
+            <input id="fStyle" placeholder="短句、轻声，偶尔用颜文字" autocomplete="off" />
+          </label>
+          <label class="wide">边界（每行一条）
+            <textarea id="fBoundaries" rows="3" placeholder="不假装是人类&#10;不编造工具结果"></textarea>
+          </label>
+          <label>记忆范围
+            <select id="fScope">
+              <option value="character">角色共享（推荐）</option>
+              <option value="session">仅当前会话</option>
+            </select>
+          </label>
+          <label>历史消息条数
+            <input id="fHistory" type="number" min="4" max="100" value="20" />
+          </label>
+          <div class="wide">
+            <span class="field-label">可用工具</span>
+            <div id="fTools" class="tool-picker"></div>
+          </div>
+        </div>
+
+        <div class="form-error" id="formError"></div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="deleteCardBtn" class="danger hidden" type="button">删除角色</button>
+        <span class="spacer"></span>
+        <button id="cancelCardBtn" class="ghost" type="button">取消</button>
+        <button id="saveCardBtn" class="send" type="button">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
