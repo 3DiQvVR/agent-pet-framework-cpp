@@ -60,6 +60,7 @@
             <output id="replySpeedValue" for="replySpeed">36 字/秒</output>
           </label>
           <button id="newChatBtn" class="ghost" type="button">+ 新对话</button>
+          <button id="live2dDesktopBtn" class="ghost" type="button" title="打开角色 Live2D 桌面窗口">Live2D 桌面形象</button>
         </div>
       </header>
 
@@ -151,6 +152,11 @@
               <span id="portraitHint">未上传图片，将使用 Emoji 头像。</span>
               <button id="clearPortrait" class="mini" type="button">移除立绘</button>
             </div>
+          </div>
+          <div class="wide portrait-field">
+            <label for="fLive2d">Live2D 模型目录（选择包含 .model3.json 的整个导出目录）</label>
+            <input id="fLive2d" type="file" multiple webkitdirectory directory />
+            <div class="portrait-preview-row"><span id="live2dHint">选择目录后，保存角色时会上传模型资源。</span></div>
           </div>
           <label class="wide">问候语
             <input id="fGreeting" placeholder="我来了，今天想聊什么？" autocomplete="off" />

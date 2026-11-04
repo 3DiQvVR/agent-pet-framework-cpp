@@ -769,6 +769,7 @@ body {
 .card-portrait { width:100%; height:100%; object-fit:cover; border-radius:inherit; }
 .pet.has-portrait { width:180px; height:230px; border-radius:18px; border:0; background:transparent; font-size:0; }
 .pet.has-portrait img { width:100%; height:100%; object-fit:contain; filter:drop-shadow(0 15px 25px rgba(0,0,0,.42)); }
+.pet { translate:var(--gaze-x,0px) var(--gaze-y,0px); rotate:var(--gaze-rotate,0deg); transition:translate .18s ease-out,rotate .18s ease-out; }
 .form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

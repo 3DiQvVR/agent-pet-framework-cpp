@@ -18,6 +18,9 @@
 #if defined(_WIN32)
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#define NOMINMAX
+#include <windows.h>
+#include <dwmapi.h>
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -37,7 +40,7 @@ struct HttpRequest {
     std::string body;
 };
 
-std::string urlDecode(const std::string& text) {
+std::string urlDecode(const std::string& text, bool plusAsSpace = true) {
     std::string out;
     for (std::size_t i = 0; i < text.size(); ++i) {
         if (text[i] == '%' && i + 2 < text.size()) {
@@ -55,7 +58,7 @@ std::string urlDecode(const std::string& text) {
                 continue;
             }
         }
-        out.push_back(text[i] == '+' ? ' ' : text[i]);
+        out.push_back(plusAsSpace && text[i] == '+' ? ' ' : text[i]);
     }
     return out;
 }
@@ -116,6 +119,9 @@ std::string contentTypeFor(const std::string& path) {
     if (ext == ".js") return "application/javascript; charset=utf-8";
     if (ext == ".svg") return "image/svg+xml";
     if (ext == ".png") return "image/png";
+    if (ext == ".webp") return "image/webp";
+    if (ext == ".jpg" || ext == ".jpeg") return "image/jpeg";
+    if (ext == ".moc3") return "application/octet-stream";
     if (ext == ".ico") return "image/x-icon";
     if (ext == ".json") return "application/json; charset=utf-8";
     return "text/plain; charset=utf-8";
@@ -180,6 +186,78 @@ struct HttpServer::Impl {
         sendJson(socket, status, json::Value::object({{"error", message}}));
     }
 
+#if defined(_WIN32)
+    static HWND findPetWindow() {
+        struct Search { HWND window = nullptr; } search;
+        EnumWindows([](HWND window, LPARAM parameter) -> BOOL {
+            auto* result = reinterpret_cast<Search*>(parameter);
+            if (!IsWindowVisible(window)) return TRUE;
+            wchar_t title[512]{};
+            GetWindowTextW(window, title, static_cast<int>(std::size(title)));
+            if (std::wstring(title).find(L"PetCore -") != std::wstring::npos) {
+                result->window = window;
+                return FALSE;
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&search));
+        return search.window;
+    }
+
+    static void closeDesktopPet() {
+        if (HWND window = findPetWindow()) PostMessageW(window, WM_CLOSE, 0, 0);
+    }
+
+    bool launchDesktopPet(const std::string& characterId) {
+        closeDesktopPet();
+        Sleep(250);
+        wchar_t programFiles[MAX_PATH]{};
+        DWORD length = GetEnvironmentVariableW(L"ProgramFiles(x86)", programFiles, MAX_PATH);
+        if (!length || length >= MAX_PATH) {
+            length = GetEnvironmentVariableW(L"ProgramFiles", programFiles, MAX_PATH);
+            if (!length || length >= MAX_PATH) return false;
+        }
+        std::wstring edge = std::wstring(programFiles) + L"\\Microsoft\\Edge\\Application\\msedge.exe";
+        if (GetFileAttributesW(edge.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
+
+        wchar_t localAppData[MAX_PATH]{};
+        length = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
+        if (!length || length >= MAX_PATH) return false;
+        const std::wstring profile = std::wstring(localAppData) + L"\\PetCore\\Live2DProfile";
+        std::error_code profileError;
+        std::filesystem::create_directories(profile, profileError);
+        if (profileError) return false;
+
+        const std::string url = "http://127.0.0.1:" + std::to_string(actualPort) +
+                                "/live2d.html?character=" + characterId;
+        std::wstring command = L"\"" + edge + L"\" --app=" + std::wstring(url.begin(), url.end()) +
+                               L" --new-window --no-first-run --disable-sync --user-data-dir=\"" + profile +
+                               L"\" --window-size=440,720";
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION process{};
+        if (!CreateProcessW(edge.c_str(), command.data(), nullptr, nullptr, FALSE,
+                            CREATE_NEW_PROCESS_GROUP, nullptr, nullptr, &startup, &process)) return false;
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+
+        for (int attempt = 0; attempt < 40; ++attempt) {
+            if (HWND window = findPetWindow()) {
+                const LONG_PTR style = GetWindowLongPtrW(window, GWL_STYLE);
+                SetWindowLongPtrW(window, GWL_STYLE,
+                                  (style & ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX |
+                                             WS_MAXIMIZEBOX | WS_SYSMENU)) | WS_POPUP);
+                const MARGINS glass{-1, -1, -1, -1};
+                DwmExtendFrameIntoClientArea(window, &glass);
+                SetWindowPos(window, HWND_TOPMOST, 0, 0, 440, 720,
+                             SWP_NOMOVE | SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+                return true;
+            }
+            Sleep(250);
+        }
+        return false;
+    }
+#endif
+
     bool readRequest(SOCKET socket, HttpRequest& request) {
 #if defined(_WIN32)
         DWORD timeout = 10000;
@@ -222,7 +300,7 @@ struct HttpServer::Impl {
                 }
             }
         }
-        if (contentLength > 4 * 1024 * 1024) return false;
+        if (contentLength > 16 * 1024 * 1024) return false;
         while (body.size() < contentLength) {
             const int received = ::recv(socket, chunk, sizeof(chunk), 0);
             if (received <= 0) return false;
@@ -277,6 +355,55 @@ struct HttpServer::Impl {
         std::string path;
         const auto query = parseQuery(request.path, path);
 
+        // User supplied Cubism assets are stored separately from character JSON.
+        // Keep paths confined to one custom character's model directory.
+        const std::string uploadPrefix = "/api/live2d/";
+        if (request.method == "PUT" && util::startsWith(path, uploadPrefix)) {
+            const std::string tail = path.substr(uploadPrefix.size());
+            const auto slash = tail.find('/');
+            if (slash == std::string::npos || slash == 0 || slash + 1 >= tail.size()) {
+                sendError(socket, 400, "character id and model file path are required");
+                return;
+            }
+            const std::string id = urlDecode(tail.substr(0, slash));
+            const std::string relative = urlDecode(tail.substr(slash + 1), false);
+            if (!runtime.characters().isCustom(id)) {
+                sendError(socket, 403, "Live2D assets can only be attached to custom characters");
+                return;
+            }
+            const std::filesystem::path relPath(relative);
+            if (relPath.is_absolute() || relative.find("..") != std::string::npos ||
+                relative.find(':') != std::string::npos || relative.size() > 512 ||
+                request.body.size() > 16 * 1024 * 1024) {
+                sendError(socket, 400, "invalid Live2D asset path or file size");
+                return;
+            }
+            const auto target = std::filesystem::path(runtime.config().baseDir) / "data" / "live2d" / id / relPath;
+            const std::string lowerName = util::toLowerAscii(relPath.filename().string());
+            const std::string modelSuffix = ".model3.json";
+            if (lowerName.size() >= modelSuffix.size() &&
+                lowerName.compare(lowerName.size() - modelSuffix.size(), modelSuffix.size(), modelSuffix) == 0) {
+                json::Value model;
+                try { model = json::Value::parse(request.body); }
+                catch (const std::exception&) {
+                    sendError(socket, 400, "model3.json is not valid JSON");
+                    return;
+                }
+                const auto* references = model.find("FileReferences");
+                if (!model.isObject() || !references || !references->isObject() ||
+                    !references->find("Moc") || !references->at("Moc").isString()) {
+                    sendError(socket, 400, "model3.json must contain FileReferences.Moc");
+                    return;
+                }
+                auto raw = runtime.characters().get(id)->raw;
+                raw["live2d_model"] = "/live2d/" + id + "/" + relative;
+                runtime.characters().saveCustom(raw);
+            }
+            util::writeFileAtomic(target.string(), request.body);
+            sendJson(socket, 200, json::Value::object({{"ok", true}}));
+            return;
+        }
+
         if (request.method == "GET" && path == "/api/health") {
             sendJson(socket, 200, json::Value::object({
                                       {"ok", true},
@@ -302,6 +429,47 @@ struct HttpServer::Impl {
                 }));
             }
             sendJson(socket, 200, json::Value::object({{"tools", tools}}));
+            return;
+        }
+        if (request.method == "POST" && path == "/api/desktop/live2d/close") {
+#if defined(_WIN32)
+            closeDesktopPet();
+            sendJson(socket, 200, json::Value::object({{"ok", true}}));
+#else
+            sendError(socket, 501, "desktop Live2D window is currently supported on Windows only");
+#endif
+            return;
+        }
+        if (request.method == "POST" && path == "/api/desktop/live2d") {
+            const json::Value body = json::Value::parse(request.body.empty() ? "{}" : request.body);
+            const std::string id = util::jstr(body, "character_id");
+            if (!runtime.characters().exists(id)) {
+                sendError(socket, 404, "character not found");
+                return;
+            }
+            const auto card = runtime.characters().get(id);
+            if (!card || util::jstr(card->raw, "live2d_model").empty()) {
+#if defined(_WIN32)
+                closeDesktopPet();
+                sendJson(socket, 200, json::Value::object({{"ok", true}, {"closed", true}}));
+#else
+                sendError(socket, 501, "desktop Live2D window is currently supported on Windows only");
+#endif
+                return;
+            }
+            if (!runtime.characters().isCustom(id)) {
+                sendError(socket, 403, "Live2D models can only be attached to custom characters");
+                return;
+            }
+#if defined(_WIN32)
+            if (!launchDesktopPet(id)) {
+                sendError(socket, 500, "could not launch Microsoft Edge app window");
+                return;
+            }
+            sendJson(socket, 200, json::Value::object({{"ok", true}, {"character_id", id}}));
+#else
+            sendError(socket, 501, "desktop Live2D window is currently supported on Windows only");
+#endif
             return;
         }
         if (request.method == "GET" && path == "/api/characters") {
@@ -364,6 +532,12 @@ struct HttpServer::Impl {
                 return;
             }
             runtime.characters().deleteCustom(id);
+            std::error_code assetError;
+            std::filesystem::remove_all(std::filesystem::path(runtime.config().baseDir) / "data" / "live2d" / id,
+                                        assetError);
+#if defined(_WIN32)
+            closeDesktopPet();
+#endif
             sendJson(socket, 200, json::Value::object({{"ok", true}, {"id", id}}));
             return;
         }
@@ -502,13 +676,16 @@ struct HttpServer::Impl {
         std::string path = request.path;
         const auto queryMark = path.find('?');
         if (queryMark != std::string::npos) path.resize(queryMark);
+        path = urlDecode(path, false);
         if (path == "/") path = "/index.html";
-        if (path.find("..") != std::string::npos) {
+        if (path.find("..") != std::string::npos || path.find('\\') != std::string::npos ||
+            path.find(':') != std::string::npos) {
             sendError(socket, 400, "invalid path");
             return;
         }
-        const std::filesystem::path file =
-            std::filesystem::path(webRoot) / path.substr(path.empty() ? 0 : 1);
+        const std::filesystem::path file = util::startsWith(path, "/live2d/")
+            ? std::filesystem::path(runtime.config().baseDir) / "data" / path.substr(1)
+            : std::filesystem::path(webRoot) / path.substr(path.empty() ? 0 : 1);
         std::error_code error;
         if (!std::filesystem::is_regular_file(file, error)) {
             sendError(socket, 404, "not found: " + path);

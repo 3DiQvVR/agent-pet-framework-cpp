@@ -131,6 +131,7 @@ json::Value CharacterCard::toPublicJson() const {
         {"tagline", tagline},
         {"emoji", emoji},
         {"portrait", raw.find("portrait") ? raw.at("portrait") : json::Value("")},
+        {"live2d_model", raw.find("live2d_model") ? raw.at("live2d_model") : json::Value("")},
         {"color", color},
         {"greeting", greeting},
         {"default_emotion", defaultEmotion},

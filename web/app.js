@@ -17,7 +17,7 @@
     bubble: $("bubble"), messages: $("messages"), typing: $("typing"),
     replySpeed: $("replySpeed"), replySpeedValue: $("replySpeedValue"),
     composer: $("composer"), input: $("input"), sendBtn: $("sendBtn"),
-    newChatBtn: $("newChatBtn"), memoryBtn: $("memoryBtn"),
+    newChatBtn: $("newChatBtn"), memoryBtn: $("memoryBtn"), live2dDesktopBtn: $("live2dDesktopBtn"),
     refreshMemory: $("refreshMemory"), memory: $("memory"),
     trace: $("trace"), traceCount: $("traceCount"), quick: $("quick"),
     toast: $("toast"),
@@ -25,6 +25,7 @@
     modalClose: $("modalClose"), fId: $("fId"), fName: $("fName"), fTagline: $("fTagline"),
     fEmoji: $("fEmoji"), fColor: $("fColor"), fGreeting: $("fGreeting"),
     fPortrait: $("fPortrait"), portraitPreview: $("portraitPreview"), portraitHint: $("portraitHint"), clearPortrait: $("clearPortrait"),
+    fLive2d: $("fLive2d"), live2dHint: $("live2dHint"),
     fSystem: $("fSystem"), fStyle: $("fStyle"), fBoundaries: $("fBoundaries"),
     fScope: $("fScope"), fHistory: $("fHistory"), fTools: $("fTools"),
     formError: $("formError"), deleteCardBtn: $("deleteCardBtn"),
@@ -47,6 +48,7 @@
     streamFraction: 0,
     streamFinal: false,
     portraitData: "",
+    live2dFiles: [],
   };
 
   const QUICK_PROMPTS = [
@@ -55,6 +57,28 @@
     "你还记得我吗？",
     "帮我列个待办",
   ];
+
+  // Keep the on-stage companion attentive to the pointer. Live2D models can
+  // later consume these normalized coordinates as gaze parameters; the current
+  // portrait fallback uses a small, bounded parallax movement.
+  let pointerFrame = 0;
+  el.stage.addEventListener("pointermove", (event) => {
+    if (pointerFrame) return;
+    pointerFrame = requestAnimationFrame(() => {
+      pointerFrame = 0;
+      const bounds = el.stage.getBoundingClientRect();
+      const x = Math.max(-1, Math.min(1, ((event.clientX - bounds.left) / bounds.width - 0.5) * 2));
+      const y = Math.max(-1, Math.min(1, ((event.clientY - bounds.top) / bounds.height - 0.5) * 2));
+      el.pet.style.setProperty("--gaze-x", `${x * 5}px`);
+      el.pet.style.setProperty("--gaze-y", `${y * 4}px`);
+      el.pet.style.setProperty("--gaze-rotate", `${x * 2}deg`);
+    });
+  });
+  el.stage.addEventListener("pointerleave", () => {
+    el.pet.style.setProperty("--gaze-x", "0px");
+    el.pet.style.setProperty("--gaze-y", "0px");
+    el.pet.style.setProperty("--gaze-rotate", "0deg");
+  });
 
   function esc(value) {
     return String(value == null ? "" : value).replace(/[&<>"']/g, (ch) => ({
@@ -168,7 +192,7 @@
         image.src = card.portrait; image.alt = `${card.name}立绘`; image.className = "card-portrait";
         avatar.replaceChildren(image);
       }
-      node.addEventListener("click", () => selectCard(card));
+      node.addEventListener("click", () => selectCard(card, { openDesktop: true }));
       const editButton = node.querySelector('[data-action="edit"]');
       if (editButton) {
         editButton.addEventListener("click", (event) => {
@@ -273,6 +297,9 @@
     el.fTagline.value = source.tagline || "";
     el.fEmoji.value = source.emoji || "🌱";
     el.fPortrait.value = "";
+    el.fLive2d.value = "";
+    state.live2dFiles = [];
+    el.live2dHint.textContent = source.live2d_model ? `已提交模型：${source.live2d_model}` : "选择目录后，保存角色时会上传模型资源。";
     showPortraitPreview(source.portrait || "");
     el.fColor.value = /^#[0-9a-fA-F]{6}$/.test(source.color || "") ? source.color : "#6ea8fe";
     el.fGreeting.value = source.greeting || "";
@@ -306,6 +333,7 @@
       tagline: el.fTagline.value.trim(),
       emoji: el.fEmoji.value.trim() || "🌱",
       portrait: state.portraitData,
+      live2d_model: (state.editing && state.editing.live2d_model) || "",
       color,
       greeting: el.fGreeting.value.trim(),
       persona: {
@@ -360,10 +388,27 @@
       let data = {};
       try { data = await response.json(); } catch (_) {}
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      if (state.live2dFiles.length) {
+        const files = state.live2dFiles;
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          const relative = file.webkitRelativePath.split("/").slice(1).join("/");
+          const encoded = relative.split("/").map(encodeURIComponent).join("/");
+          const upload = await fetch(`/api/live2d/${encodeURIComponent(card.id)}/${encoded}`, {
+            method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body: file,
+          });
+          if (!upload.ok) {
+            let detail = {}; try { detail = await upload.json(); } catch (_) {}
+            throw new Error(detail.error || `模型文件上传失败：${relative}`);
+          }
+          el.live2dHint.textContent = `正在上传模型资源 ${i + 1}/${files.length}`;
+        }
+      }
       closeCardForm();
       await loadCharacters();
       const saved = state.characters.find((item) => item.id === card.id);
       if (saved) await selectCard(saved);
+      if (saved && state.live2dFiles.length) await launchDesktopPet(saved);
       toast(editing ? "角色卡已更新" : "角色卡已创建");
     } catch (error) {
       el.formError.textContent = error.message;
@@ -443,8 +488,9 @@
     el.traceCount.textContent = "0";
   }
 
-  async function selectCard(card) {
+  async function selectCard(card, options = {}) {
     if (state.busy) return toast("等这一轮说完再换角色");
+    if (options.openDesktop) launchDesktopPet(card);
     applyCard(card);
     clearConversation();
     try {
@@ -461,6 +507,16 @@
     } catch (error) {
       toast(error.message);
     }
+  }
+
+  async function launchDesktopPet(card) {
+    try {
+      const result = await api("/api/desktop/live2d", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ character_id: card.id }),
+      });
+      toast(result.closed ? "Live2D 桌面形象已关闭" : `${card.name} 的 Live2D 桌面形象已打开`);
+    } catch (error) { toast(error.message); }
   }
 
   async function loadSession(id) {
@@ -777,12 +833,29 @@
       reader.onerror = () => { el.formError.textContent = "读取图片失败，请重试。"; };
       reader.readAsDataURL(file);
     });
+    el.fLive2d.addEventListener("change", () => {
+      const files = Array.from(el.fLive2d.files || []);
+      const model = files.find((file) => file.name.toLowerCase().endsWith(".model3.json"));
+      const total = files.reduce((sum, file) => sum + file.size, 0);
+      if (!files.length) { state.live2dFiles = []; return; }
+      if (!model) { el.formError.textContent = "所选目录中没有 .model3.json 模型入口文件。"; el.fLive2d.value = ""; return; }
+      if (files.length > 200 || files.some((file) => file.size > 16 * 1024 * 1024) || total > 128 * 1024 * 1024) {
+        el.formError.textContent = "模型目录最多 200 个文件、总计 128 MB，单个文件不能超过 16 MB。"; el.fLive2d.value = ""; return;
+      }
+      state.live2dFiles = files;
+      el.live2dHint.textContent = `已选择 ${files.length} 个文件（${(total / 1024 / 1024).toFixed(1)} MB）`;
+      el.formError.textContent = "";
+    });
     el.clearPortrait.addEventListener("click", () => { el.fPortrait.value = ""; showPortraitPreview(""); });
     el.composer.addEventListener("submit", (event) => {
       event.preventDefault();
       send();
     });
     el.newChatBtn.addEventListener("click", newChat);
+    el.live2dDesktopBtn.addEventListener("click", () => {
+      if (!state.card) return toast("请先选择聊天角色");
+      launchDesktopPet(state.card);
+    });
     el.refreshMemory.addEventListener("click", loadMemory);
     el.memoryBtn.addEventListener("click", () => {
       el.memory.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -821,6 +894,7 @@
       } else {
         setStatus(false, "没有角色卡");
       }
+      if (state.card) await launchDesktopPet(state.card);
     } catch (error) {
       setStatus(false, "加载失败");
       toast(error.message);

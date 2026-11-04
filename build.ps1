@@ -40,7 +40,7 @@ if ($zig) {
     Write-Host "Using bundled Zig: $zig"
     $sources = Get-Sources
     $zigArgs = @('c++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Iinclude') + $sources +
-               @('-o', (Join-Path $build 'petcore.exe'), '-lwinhttp', '-lws2_32', '-lshell32')
+               @('-o', (Join-Path $build 'petcore.exe'), '-lwinhttp', '-lws2_32', '-lshell32', '-ldwmapi')
     & $zig @zigArgs
     if ($LASTEXITCODE -ne 0) { throw "Zig build failed ($LASTEXITCODE)" }
     Copy-Item (Join-Path $build 'petcore.exe') (Join-Path $root 'PetCore.exe') -Force
@@ -48,7 +48,7 @@ if ($zig) {
     if ($Tests) {
         $testSources = (Get-Sources -ExcludeMain) + @((Join-Path $root 'tests\self_test.cpp'))
         $testArgs = @('c++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Iinclude') + $testSources +
-                    @('-o', (Join-Path $build 'petcore_tests.exe'), '-lwinhttp', '-lws2_32', '-lshell32')
+                    @('-o', (Join-Path $build 'petcore_tests.exe'), '-lwinhttp', '-lws2_32', '-lshell32', '-ldwmapi')
         & $zig @testArgs
         if ($LASTEXITCODE -ne 0) { throw "Zig test build failed ($LASTEXITCODE)" }
         Push-Location $root
@@ -62,7 +62,7 @@ if ($zig) {
 $cmake = Get-Command cmake -ErrorAction SilentlyContinue
 if ($cmake) {
     Write-Host "Using CMake: $($cmake.Source)"
-    & cmake -S $root -B $build -DCMAKE_BUILD_TYPE=Release
+    & cmake -S $root -B $build -DCMAKE_BUILD_TYPE=Release "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$build"
     if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
     & cmake --build $build --config Release
     if ($LASTEXITCODE -ne 0) { throw "CMake build failed" }
