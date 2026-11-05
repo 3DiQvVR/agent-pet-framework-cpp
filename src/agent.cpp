@@ -33,14 +33,16 @@ bool AgentPolicy::approve(const ToolCall& call) const {
 }
 
 AgentLoop::AgentLoop(ILLMProvider& llm, ToolRegistry& tools, MemoryService& memory, IDatabase& database,
-                     AgentPolicy policy, int maxToolRounds, int maxPromptChars)
+                     AgentPolicy policy, int maxToolRounds, int maxPromptChars,
+                     std::string replyStyle)
     : llm_(llm),
       tools_(tools),
       memory_(memory),
       database_(database),
       policy_(std::move(policy)),
       maxToolRounds_(maxToolRounds > 0 ? maxToolRounds : 6),
-      maxPromptChars_(maxPromptChars > 0 ? maxPromptChars : 6000) {}
+      maxPromptChars_(maxPromptChars > 0 ? maxPromptChars : 6000),
+      replyStyle_(std::move(replyStyle)) {}
 
 TurnResult AgentLoop::run(const SessionRecord& session, const CharacterCard& character,
                           const std::string& userText,
@@ -76,7 +78,7 @@ TurnResult AgentLoop::run(const SessionRecord& session, const CharacterCard& cha
     std::vector<Message> history = memory_.history(session.id, character.historyLimit);
     std::vector<Message> context;
     std::string systemPrompt = character.buildSystemPrompt(
-        emotion.name, emotion.intensity, session.summary, util::nowIso());
+        emotion.name, emotion.intensity, session.summary, util::nowIso(), replyStyle_);
     if (static_cast<int>(systemPrompt.size()) > maxPromptChars_) {
         systemPrompt.resize(static_cast<std::size_t>(maxPromptChars_));
         systemPrompt += "\n…（设定已截断）";

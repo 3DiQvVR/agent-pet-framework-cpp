@@ -120,6 +120,7 @@ AppConfig AppConfig::load(const std::string& path) {
         config.agent.summaryTrigger = intField(*agent, "summary_trigger", config.agent.summaryTrigger);
         config.agent.maxPromptChars = intField(*agent, "max_prompt_chars", config.agent.maxPromptChars);
         config.agent.approvalRequired = stringArray(*agent, "approval_required");
+        config.agent.replyStyle = stringField(*agent, "reply_style", config.agent.replyStyle);
     }
 
     if (const auto* characters = root.find("characters"); characters && characters->isObject()) {
@@ -195,6 +196,7 @@ json::Value AppConfig::toPublicJson() const {
             {"max_tool_rounds", agent.maxToolRounds},
             {"history_limit", agent.historyLimit},
             {"auto_summarize", agent.autoSummarize},
+            {"reply_style", agent.replyStyle},
         })},
         {"characters", json::Value::object({
             {"dirs", [&] {

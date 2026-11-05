@@ -150,30 +150,33 @@ std::string CharacterCard::emotionLabel(const std::string& emotionName) const {
 }
 
 std::string CharacterCard::buildSystemPrompt(const std::string& emotionName, double intensity,
-                                             const std::string& summary,
-                                             const std::string& now) const {
+                                             const std::string& summary, const std::string& now,
+                                             const std::string& replyStyle) const {
     std::string prompt;
     prompt += "你是" + name;
     if (!tagline.empty()) prompt += "，" + tagline;
     prompt += "。\n\n" + systemPrompt + "\n";
-    if (!speakingStyle.empty()) prompt += "\n【说话风格】\n" + speakingStyle + "\n";
+    if (!speakingStyle.empty()) prompt += "\n说话风格：\n" + speakingStyle + "\n";
     if (!boundaries.empty()) {
-        prompt += "\n【边界】\n";
-        for (const auto& boundary : boundaries) prompt += "- " + boundary + "\n";
+        prompt += "\n边界：";
+        for (const auto& boundary : boundaries) prompt += boundary + "；";
+        prompt += "\n";
     }
-    prompt += "\n【当前情绪】\n你现在感到「" + emotionLabel(emotionName) + "」，强度 " +
-              std::to_string(static_cast<int>(intensity * 100)) + "%。情绪会影响语气，但不要反复宣告情绪。\n";
+    prompt += "\n当前情绪：你现在感到「" + emotionLabel(emotionName) + "」，强度 " +
+              std::to_string(static_cast<int>(intensity * 100)) +
+              "%。情绪会影响语气，但不要反复宣告情绪。\n";
     if (!summary.empty()) {
-        prompt += "\n【长期记忆摘要】\n" + summary + "\n";
+        prompt += "\n长期记忆摘要：\n" + summary + "\n";
     }
-    prompt += "\n【当前时间】\n" + now + "（UTC）\n";
+    prompt += "\n当前时间：" + now + "（UTC）。\n";
     prompt +=
-        "\n【工具使用】\n"
-        "你可以调用工具来获得真实信息或改变状态。规则：\n"
-        "1. 需要事实（时间、记忆、待办）时先调用工具，不要编造。\n"
-        "2. 每轮最多调用 1-2 个工具，拿到结果后立即回答。\n"
-        "3. 工具失败时如实说明，不要重复同样的调用。\n"
-        "4. 不要声称自己执行了未实际调用的操作。\n";
+        "\n工具规则：需要事实（时间、记忆、待办）时先调用工具；每轮最多调用一两个，"
+        "拿到结果就用口语回答；工具失败时如实说明，不要重复调用，也不要声称自己执行了未实际调用的操作。\n";
+    // Put the reply-style contract last: recency is the strongest lever against
+    // the model's default Markdown/heading/list formatting.
+    if (!replyStyle.empty()) {
+        prompt += "\n回复方式（优先级最高）：\n" + replyStyle + "\n";
+    }
     return prompt;
 }
 

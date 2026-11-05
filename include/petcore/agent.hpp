@@ -38,7 +38,8 @@ struct TurnResult {
 class AgentLoop {
 public:
     AgentLoop(ILLMProvider& llm, ToolRegistry& tools, MemoryService& memory, IDatabase& database,
-              AgentPolicy policy, int maxToolRounds = 6, int maxPromptChars = 6000);
+              AgentPolicy policy, int maxToolRounds = 6, int maxPromptChars = 6000,
+              std::string replyStyle = "");
 
     TurnResult run(const SessionRecord& session, const CharacterCard& character,
                    const std::string& userText,
@@ -52,6 +53,7 @@ private:
     AgentPolicy policy_;
     int maxToolRounds_;
     int maxPromptChars_;
+    std::string replyStyle_;
 };
 
 }  // namespace petcore

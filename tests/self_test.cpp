@@ -76,6 +76,9 @@ void testCharacters() {
     CHECK(card->emotions.count("happy"));
     CHECK(card->buildSystemPrompt("happy", 0.8, "用户喜欢下雨天", util::nowIso()).find("心情不错") !=
           std::string::npos);
+    const auto styled = card->buildSystemPrompt("happy", 0.8, "", "now", "不要使用 Markdown");
+    CHECK(styled.find("回复方式") != std::string::npos);
+    CHECK(styled.find("不要使用 Markdown") != std::string::npos);
 
     bool threw = false;
     try {

@@ -86,6 +86,29 @@
     }[ch]));
   }
 
+  // A desktop pet speaks in chat bubbles, not documents. Some providers still
+  // emit Markdown headings/lists/bold; normalise the final text so raw "##",
+  // "**" or "- " never leak into the conversation.
+  function normalizeReply(text) {
+    let value = String(text || "").replace(/\r\n/g, "\n");
+    value = value.replace(/```[\s\S]*?```/g, (block) =>
+      block.replace(/```[a-zA-Z0-9_-]*\s*/g, "").replace(/```/g, "").trim());
+    value = value.replace(/^#{1,6}\s+/gm, "");
+    value = value.replace(/^\s*>\s?/gm, "");
+    value = value.replace(/^\s*[-*+]\s+/gm, "");
+    value = value.replace(/^\s*\d+[.)]\s+/gm, "");
+    value = value.replace(/^\s*---+\s*$/gm, "");
+    value = value.replace(/\*\*(.*?)\*\*/g, "$1");
+    value = value.replace(/__(.*?)__/g, "$1");
+    value = value.replace(/`([^`]+)`/g, "$1");
+    value = value.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1（$2）");
+    const blocks = value
+      .split(/\n{2,}/)
+      .map((block) => block.split("\n").map((line) => line.trim()).filter(Boolean).join(" "))
+      .filter(Boolean);
+    return blocks.join("\n\n").trim();
+  }
+
   function validPortrait(value) {
     return typeof value === "string" && value.length <= 2200000 &&
       /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(value);
@@ -548,6 +571,8 @@
 
   function addMessage(role, text, card, scroll = true) {
     if (!text) return;
+    if (role === "assistant" && text.trim()) text = normalizeReply(text);
+    if (!text) return;
     const placeholder = el.messages.querySelector(".empty");
     if (placeholder) placeholder.remove();
     const node = document.createElement("div");
@@ -603,7 +628,10 @@
   function finishPendingStream() {
     if (state.streamTimer) clearInterval(state.streamTimer);
     state.streamTimer = null;
-    if (state.streamText && state.streamQueue.length) state.streamText.textContent += state.streamQueue.join("");
+    if (state.streamText) {
+      const text = state.streamText.textContent + state.streamQueue.join("");
+      state.streamText.textContent = normalizeReply(text);
+    }
     state.streamQueue = [];
     state.streamText = null;
     state.streamFinal = false;
@@ -753,6 +781,7 @@
         toast(data.message || "Agent 出错");
         break;
       case "done":
+        finishPendingStream();
         break;
       default:
         break;

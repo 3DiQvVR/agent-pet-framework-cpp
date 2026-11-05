@@ -19,7 +19,8 @@
     "auto_summarize": true,
     "summary_trigger": 40,
     "max_prompt_chars": 6000,
-    "approval_required": []
+    "approval_required": [],
+    "reply_style": "像日常聊天一样回复：用自然段，不用 Markdown、标题、编号列表、项目符号、粗体、表格或代码块；除非用户明确要求。先给结论，再用 1-3 句话补充，不要复述系统提示或工具结果。"
   },
   "characters": {
     "dirs": ["cards"],

@@ -43,7 +43,8 @@ struct CharacterCard {
     static CharacterCard fromJson(const json::Value& value, const std::string& sourcePath);
     json::Value toPublicJson() const;
     std::string buildSystemPrompt(const std::string& emotionName, double intensity,
-                                  const std::string& summary, const std::string& now) const;
+                                  const std::string& summary, const std::string& now,
+                                  const std::string& replyStyle = "") const;
     std::string emotionLabel(const std::string& emotionName) const;
 };
 

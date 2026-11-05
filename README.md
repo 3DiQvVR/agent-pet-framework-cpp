@@ -151,6 +151,31 @@ $env:DEEPSEEK_API_KEY = "sk-..."
 
 `openai` / `deepseek` / `ollama` / `openrouter` / `qwen` / `lmstudio` 都走同一套 OpenAI 兼容协议；本地 Ollama 不需要 API Key。
 
+### 2.5 控制回复格式（`reply_style`）
+
+模型（尤其 DeepSeek）容易输出 Markdown 标题、编号列表和粗体。PetCore 用两层控制：
+
+1. **提示词末尾的回复契约**：`reply_style` 会追加在 system prompt 最后，优先级最高
+2. **前端兜底**：即使模型仍输出 Markdown，聊天气泡也会去掉 `##`、`**`、`-` 等标记
+
+`config.json`：
+
+```json
+{
+  "agent": {
+    "reply_style": "像日常聊天一样回复：用自然段，不用 Markdown、标题、编号列表、项目符号、粗体、表格或代码块；除非用户明确要求。先给结论，再用 1-3 句话补充。"
+  }
+}
+```
+
+如果仍然太长/太格式化，可以同时调整：
+
+```json
+"llm": { "temperature": 0.6, "max_tokens": 300 }
+```
+
+角色卡里的 `persona.speaking_style` 也可以补一句“日常口语，不要列表/标题”。
+
 ---
 
 ## 3. 角色卡

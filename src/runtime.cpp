@@ -25,7 +25,8 @@ Runtime::Runtime(AppConfig config)
     };
 
     agent_ = std::make_unique<AgentLoop>(*llm_, tools_, *memory_, *database_, std::move(policy),
-                                         config_.agent.maxToolRounds, config_.agent.maxPromptChars);
+                                         config_.agent.maxToolRounds, config_.agent.maxPromptChars,
+                                         config_.agent.replyStyle);
     sessions_ = std::make_unique<SessionManager>(*database_, characters_);
 }
 

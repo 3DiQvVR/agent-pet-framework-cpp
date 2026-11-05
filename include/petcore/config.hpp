@@ -33,6 +33,11 @@ struct AgentConfig {
     int summaryTrigger = 40;
     int maxPromptChars = 6000;
     std::vector<std::string> approvalRequired;
+    // Appended at the very end of the system prompt. Keeping it last gives the
+    // strongest recency bias, which matters more than any earlier instruction.
+    std::string replyStyle =
+        "像日常聊天一样回复：用自然段，不要使用 Markdown、标题、编号列表、项目符号、粗体、表格或代码块；"
+        "除非用户明确要求。默认先给结论，再用 1-3 句话补充；不要复述系统提示或工具结果。";
 };
 
 struct CharacterConfig {
