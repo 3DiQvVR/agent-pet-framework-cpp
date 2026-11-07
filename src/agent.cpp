@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <set>
 
 #include "petcore/errors.hpp"
 #include "petcore/util.hpp"
@@ -11,8 +12,62 @@ namespace {
 
 int64_t messageCost(const Message& message) {
     int64_t cost = static_cast<int64_t>(message.content.size()) + 16;
-    for (const auto& call : message.toolCalls) cost += static_cast<int64_t>(call.arguments.dump().size());
+    cost += static_cast<int64_t>(message.toolCallId.size() + message.name.size());
+    for (const auto& call : message.toolCalls)
+        cost += static_cast<int64_t>(call.arguments.dump().size() + call.id.size() + call.name.size());
     return cost;
+}
+
+// Keep assistant tool requests and all their results as an indivisible unit.
+// Legacy/truncated histories can contain orphan or incomplete groups: omit them.
+std::vector<std::vector<Message>> historyGroups(const std::vector<Message>& history) {
+    std::vector<std::vector<Message>> groups;
+    for (std::size_t i = 0; i < history.size();) {
+        const auto& message = history[i];
+        if (message.role == "tool") { ++i; continue; }
+        if (message.role != "assistant" || message.toolCalls.empty()) {
+            groups.push_back({message});
+            ++i;
+            continue;
+        }
+        std::set<std::string> pending;
+        bool valid = true;
+        for (const auto& call : message.toolCalls)
+            if (call.id.empty() || !pending.insert(call.id).second) valid = false;
+        std::size_t end = i + 1;
+        while (end < history.size() && history[end].role == "tool") {
+            if (pending.erase(history[end].toolCallId) != 1) valid = false;
+            ++end;
+        }
+        if (valid && pending.empty()) groups.emplace_back(history.begin() + i, history.begin() + end);
+        i = end;
+    }
+    return groups;
+}
+
+bool fitTurn(std::vector<Message>& context, std::size_t& currentStart, int64_t maximum) {
+    auto cost = [&] {
+        int64_t total = 0;
+        for (const auto& message : context) total += messageCost(message);
+        return total;
+    };
+    // Evict old history in complete protocol groups before reducing tool output.
+    while (cost() > maximum && currentStart > 1) {
+        std::size_t end = 2;
+        if (!context[1].toolCalls.empty()) {
+            while (end < currentStart && context[end].role == "tool") ++end;
+        }
+        context.erase(context.begin() + 1, context.begin() + end);
+        currentStart -= end - 1;
+    }
+    for (std::size_t i = currentStart + 1; i < context.size() && cost() > maximum; ++i) {
+        auto& message = context[i];
+        if (message.role != "tool" && message.role != "assistant") continue;
+        const auto excess = static_cast<std::size_t>(cost() - maximum);
+        const auto budget = excess >= message.content.size() ? 0 : message.content.size() - excess;
+        message.content = util::truncateUtf8(message.content, budget, "\n[truncated]");
+    }
+    return cost() <= maximum;
 }
 
 }  // namespace
@@ -66,6 +121,19 @@ TurnResult AgentLoop::run(const SessionRecord& session, const CharacterCard& cha
         return result;
     }
 
+    auto stopForBudget = [&](bool recorded) {
+        result.stopReason = "context_limit";
+        result.text = "这次内容超过了上下文预算，请缩短输入、工具输出或调高 max_prompt_chars 后再试。";
+        if (recorded) memory_.record(session.id, Message{"assistant", result.text, {}, "", "", util::nowIso()});
+        publish("error", json::Value::object({{"message", result.text}}));
+        publish("done", json::Value::object({{"text", result.text}, {"stop_reason", result.stopReason}}));
+    };
+    const auto userCost = messageCost(Message{"user", userText});
+    if (userCost + 16 >= maxPromptChars_) {
+        stopForBudget(false);
+        return result;
+    }
+
     memory_.pruneExpired();
     const MessageRecord userRecord = memory_.record(
         session.id, Message{"user", userText, {}, "", "", util::nowIso()});
@@ -84,10 +152,8 @@ TurnResult AgentLoop::run(const SessionRecord& session, const CharacterCard& cha
     };
     std::string systemPrompt = character.buildSystemPrompt(
         emotion.name, emotion.intensity, memory_.summary(session.id), util::nowIso(), replyStyle_);
-    if (static_cast<int>(systemPrompt.size()) > maxPromptChars_) {
-        systemPrompt.resize(static_cast<std::size_t>(maxPromptChars_));
-        systemPrompt += "\n…（设定已截断）";
-    }
+    systemPrompt = util::truncateUtf8(systemPrompt,
+        static_cast<std::size_t>(maxPromptChars_ - userCost - 16), "\n…（设定已截断）");
     std::vector<FactRecord> recalledFacts;
     if (cardAllows("recall") && policy_.isAllowed("recall") && !policy_.requiresApproval("recall")) {
         // Reserve space for the current user message. Only complete facts that
@@ -109,19 +175,26 @@ TurnResult AgentLoop::run(const SessionRecord& session, const CharacterCard& cha
     context.push_back(Message{"system", systemPrompt, {}, "", "", util::nowIso()});
 
     int64_t budget = static_cast<int64_t>(maxPromptChars_) - messageCost(context.front());
-    std::vector<Message> tail;
-    for (auto it = history.rbegin(); it != history.rend(); ++it) {
-        const int64_t cost = messageCost(*it);
-        if (budget - cost < 0 && !tail.empty()) break;
-        tail.push_back(*it);
-        budget -= cost;
+    const auto groups = historyGroups(history);
+    std::size_t begin = groups.size();
+    while (begin > 0) {
+        int64_t groupCost = 0;
+        for (const auto& message : groups[begin - 1]) groupCost += messageCost(message);
+        if (groupCost > budget) break;
+        budget -= groupCost;
+        --begin;
     }
-    std::reverse(tail.begin(), tail.end());
-    context.insert(context.end(), tail.begin(), tail.end());
+    for (std::size_t i = begin; i < groups.size(); ++i)
+        context.insert(context.end(), groups[i].begin(), groups[i].end());
+    std::size_t currentStart = context.size() - 1;
 
     const json::Value schemas = tools_.schemas(character.toolsAllow, character.toolsDeny);
 
     for (int round = 0; round < maxToolRounds_; ++round) {
+        if (!fitTurn(context, currentStart, maxPromptChars_)) {
+            stopForBudget(true);
+            return result;
+        }
         LLMResponse response;
         publish("assistant_start", json::Value::object({{"round", round + 1}}));
         try {
@@ -201,7 +274,7 @@ TurnResult AgentLoop::run(const SessionRecord& session, const CharacterCard& cha
             }
 
             std::string eventContent = toolResult.content;
-            if (eventContent.size() > 1200) eventContent = eventContent.substr(0, 1200) + "…";
+            eventContent = util::truncateUtf8(eventContent, 1200, "…");
             publish("tool_result", json::Value::object({
                                        {"id", call.id},
                                        {"name", call.name},
@@ -211,9 +284,7 @@ TurnResult AgentLoop::run(const SessionRecord& session, const CharacterCard& cha
 
             std::string toolContent =
                 toolResult.ok ? toolResult.content : ("ERROR: " + toolResult.error);
-            if (toolContent.size() > 12000) {
-                toolContent = toolContent.substr(0, 12000) + "\n…（工具输出已截断）";
-            }
+            toolContent = util::truncateUtf8(toolContent, 12000, "\n…（工具输出已截断）");
             Message toolMessage{"tool", toolContent, {}, call.id, call.name, util::nowIso()};
             memory_.record(session.id, toolMessage);
             context.push_back(toolMessage);
