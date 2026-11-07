@@ -4,11 +4,14 @@
 
 设计目标：
 
-- **零第三方运行时依赖**：JSON、配置、存储、HTTP（Windows/WinHTTP）、CLI 全部自带。
+- **C++ 核心无额外第三方库依赖**：JSON、配置、存储、HTTP（Windows/WinHTTP）、CLI 全部自带；Live2D 前端使用随仓库提供的 Cubism 组件。
 - **接口稳定、实现可换**：LLM、数据库、工具、角色卡、事件订阅都是小接口 + 注册表。
 - **可接入外部数据库**：核心只依赖 `IDatabase`，默认自带 JSON 文件库；PostgreSQL/MySQL/Redis 只需实现一个类并注册。
 - **用户选角色卡**：启动时列出角色卡让用户选择；角色卡是纯 JSON，可热加载、可覆盖。
 - **可观测**：所有步骤以 `AgentEvent` 发出，CLI 直接打印，Electron/Qt/Web 前端可订阅同一套事件。
+- **长期记忆**：相关记忆自动进入聊天上下文，支持时间衰减、间隔强化、持久化和永久遗忘。
+
+详细说明：[长期记忆](docs/MEMORY.md) · [数据库适配](docs/DATABASE.md) · [GitHub 自动同步](docs/GITHUB_SYNC.md)。
 
 ---
 
@@ -47,15 +50,19 @@
 # 方式 A：CMake（推荐）
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
 
 # 方式 B：脚本（自动寻找 _tools\zig\zig.exe 或 cmake）
 powershell -ExecutionPolicy Bypass -File .\build.ps1 -Tests
 
-# 方式 C：如果有 Visual Studio 开发者命令行
-cl /std:c++17 /EHsc /Iinclude src\*.cpp /Fe:build\petcore.exe winhttp.lib shell32.lib
+# 方式 C：在 Visual Studio 开发者 PowerShell 中手动构建
+New-Item -ItemType Directory -Force build | Out-Null
+cl /std:c++17 /EHsc /utf-8 /Iinclude src\*.cpp /Fe:build\petcore.exe winhttp.lib ws2_32.lib shell32.lib dwmapi.lib
 ```
 
 > 没有安装编译器的 Windows 机器，可以把 Zig 解压到 `_tools\zig\`，`build.ps1` 会自动使用它。
+
+`build.ps1` 依次尝试本地 Zig 和 PATH 中的 CMake，并把生成的程序复制到根目录。直接使用 CMake 时，Visual Studio 生成器通常输出到 `build/Release/petcore.exe`，单配置生成器通常输出到 `build/petcore.exe`；已有构建缓存可改变输出位置。请以构建日志为准，手动复制到根目录后再使用下文的 `PetCore.exe` 命令。仓库不包含编译器或 `.exe` 构建产物。
 
 ### 2.2 运行
 
@@ -63,13 +70,13 @@ cl /std:c++17 /EHsc /Iinclude src\*.cpp /Fe:build\petcore.exe winhttp.lib shell3
 
 ```powershell
 cd agent-pet-framework-cpp
-Copy-Item config.example.json config.json
+if (-not (Test-Path config.json)) { Copy-Item config.example.json config.json }
 .\PetCore.exe
 ```
 
 程序会启动本地 UI 服务并自动打开浏览器 `http://127.0.0.1:8787`。关闭控制台窗口或按 `Ctrl+C` 即可停止。
 
-`build\petcore.exe` 行为完全相同；需要可移植/带日志的版本时使用它。
+构建目录中的可执行文件使用同一套代码；运行时需要能找到配置、角色卡和 `web/` 静态资源。
 
 仍然保留完整 CLI：
 
@@ -78,7 +85,7 @@ Copy-Item config.example.json config.json
 .\PetCore.exe chat        # 终端内对话
 ```
 
-启动后：
+使用 `chat` 命令且未指定 `--card` 时，在终端选择角色：
 
 ```
 可用的桌宠角色卡（3）：
@@ -95,7 +102,7 @@ Copy-Item config.example.json config.json
 
 ```
 你 > 现在几点？
-小雨 > 现在是 2026-10-29 22:40:12。
+博丽灵梦 > 现在是 2026-10-29 22:40:12。
   · 调用 get_time {}
   · 结果 ✓ 2026-10-29 22:40:12
 ```
@@ -125,7 +132,9 @@ Copy-Item config.example.json config.json
 .\PetCore.exe --no-open            # 不自动开浏览器
 ```
 
-> UI 服务器使用 Winsock，仅绑定 `127.0.0.1`，不对外网开放；Windows 以外平台请用 CLI 或自行接前端。控制台窗口保留用于查看启动日志，关闭窗口即停止服务。
+> UI 服务器使用 Winsock，默认绑定 `127.0.0.1`；实际监听地址由 `ui.host` 决定。Windows 以外平台请用 CLI 或自行接前端。
+
+角色编辑器还支持头像与 Live2D 模型上传，可打开独立的 Live2D 桌面窗口。`web/vendor/cubism5/` 中已包含浏览器运行所需的编译文件；修改 TypeScript 后，可用支持 `node:module.stripTypeScriptTypes` 的 Node.js 执行 `node web/build-cubism.mjs` 重新生成。模型文件须由用户提供。
 
 界面通过同一套 `AgentEvent` 驱动，和 CLI 完全共享 Agent 循环、角色卡、数据库与记忆。
 
@@ -137,7 +146,7 @@ Copy-Item config.example.json config.json
 {
   "llm": {
     "provider": "deepseek",
-    "model": "deepseek-chat",
+    "model": "替换为服务端支持的模型 ID",
     "base_url": "https://api.deepseek.com/v1",
     "api_key_env": "DEEPSEEK_API_KEY"
   }
@@ -146,7 +155,7 @@ Copy-Item config.example.json config.json
 
 ```powershell
 $env:DEEPSEEK_API_KEY = "sk-..."
-.\build\petcore.exe chat
+.\PetCore.exe chat
 ```
 
 `openai` / `deepseek` / `ollama` / `openrouter` / `qwen` / `lmstudio` 都走同一套 OpenAI 兼容协议；本地 Ollama 不需要 API Key。
@@ -155,7 +164,7 @@ $env:DEEPSEEK_API_KEY = "sk-..."
 
 模型（尤其 DeepSeek）容易输出 Markdown 标题、编号列表和粗体。PetCore 用两层控制：
 
-1. **提示词末尾的回复契约**：`reply_style` 会追加在 system prompt 最后，优先级最高
+1. **角色提示词中的回复要求**：`reply_style` 追加在角色提示词末尾；自动检索到的长期记忆可能继续附加在后面，模型是否遵循仍取决于服务端
 2. **前端兜底**：即使模型仍输出 Markdown，聊天气泡也会去掉 `##`、`**`、`-` 等标记
 
 `config.json`：
@@ -187,12 +196,12 @@ $env:DEEPSEEK_API_KEY = "sk-..."
   "id": "reimu",
   "name": "博丽灵梦",
   "tagline": "守望幻想乡结界的自由巫女",
-  "emoji": "🌧️",
-  "color": "#6ea8fe",
-  "greeting": "窗外在下雨，我就来了。",
+  "emoji": "⛩️",
+  "color": "#e56b75",
+  "greeting": "欢迎来到博丽神社。遇到什么事了？",
   "persona": {
-    "system": "你是小雨……",
-    "speaking_style": "轻声、短句……",
+    "system": "你是博丽灵梦，博丽神社的巫女。这是原创角色对话演绎。",
+    "speaking_style": "自然爽快，句子简洁。",
     "boundaries": ["不假装是人类", "不编造工具结果"]
   },
   "emotions": {
@@ -216,7 +225,7 @@ $env:DEEPSEEK_API_KEY = "sk-..."
 创建新卡：
 
 ```powershell
-.\build\petcore.exe new-card mypet --name "小煤球"
+.\PetCore.exe new-card mypet --name "小煤球"
 ```
 
 新卡写入 `characters/`，该目录会自动追加到加载路径末尾，因此同名 id 会覆盖内置卡，无需重新编译。
@@ -255,6 +264,18 @@ virtual bool deleteCharacter(const std::string& id) = 0;
 ---
 
 ## 4. 扩展点
+
+### 长期记忆的当前行为
+
+内置 JSON 和内存适配器使用 `R(t) = 1 / (1 + t / S)` 近似“先快后慢”的遗忘规律。`t` 是未强化的小时数，初始半衰期 `S = 24` 小时；这组参数是桌宠的工程默认值。
+
+- 普通聊天按角色卡的记忆范围检索最多 5 条相关事实，在提示词预算内加入完整内容；禁止 `recall` 或要求其审批时不自动检索。
+- 有效回忆或再次告知相同内容可延长半衰期，强化间隔至少 1 小时，半衰期上限 365 天；更正内容时重置强度。
+- 保持度低于 5% 时退出检索；至少 30 天未强化且保持度低于 5% 时永久删除；连续 180 天未强化也会删除。待办事项保留。
+- 清理会重置相关会话的摘要和模型上下文起点，旧历史不再进入提示词或新摘要。**相关会话原有的其他短期上下文也会退出模型输入**；聊天存档仍可查看，有效长期事实仍可检索。
+- 启动、聊天和记忆操作时按需清理，关机或闲置后在下一次操作补做。删除后再次告知会作为新记忆保存。JSON 适配器持久保存强度和上下文清理边界；`memory` 适配器只在当前进程保存。
+
+详细规则、适配器接口及测试范围见 [docs/MEMORY.md](docs/MEMORY.md)。
 
 ### 4.1 接入外部数据库（PostgreSQL / MySQL / Redis / 远程服务）
 
@@ -314,6 +335,8 @@ petcore::DatabaseRegistry::registerFactory("postgres", [](const petcore::Databas
 ```
 
 完整骨架见 `examples/postgres_database.cpp.example`。JSON 适配器同时就是「外部数据库实现」的参考实现：它演示了 seq 分配、消息持久化、事实 upsert、会话更新和角色卡 CRUD。
+
+以上是接口骨架，注释占位的方法需补全后才能使用。外部适配器及 PostgreSQL 示例默认不支持持久化强化和永久清理：需要另外实现可选的 `reviewFact`、`pruneExpiredFacts`，保存记忆字段与会话上下文边界，并防止旧状态覆盖清理结果。具体契约见长期记忆说明。
 
 角色卡表结构（PostgreSQL 示例）：
 
@@ -406,11 +429,15 @@ agent-pet-framework-cpp/
 ├── build.ps1
 ├── config.example.json
 ├── cards/                    # 内置角色卡
-├── docs/                     # UI 截图
-├── web/                      # 可视化控制台（HTML/CSS/JS，无构建步骤）
+├── docs/                     # 数据库、长期记忆、GitHub 同步说明及 UI 截图
+├── scripts/                  # GitHub 自动提交、推送和登录启动配置
+├── web/                      # 可视化控制台及 Live2D 前端
 │   ├── index.html
 │   ├── style.css
-│   └── app.js
+│   ├── app.js
+│   ├── live2d.html
+│   ├── build-cubism.mjs       # 修改 Cubism TypeScript 后重新生成 JS
+│   └── vendor/cubism5/        # Cubism 组件及独立许可证
 ├── include/petcore/          # 公共接口（header-only 类型 + 声明）
 │   ├── json.hpp              # 自带 JSON
 │   ├── types.hpp             # Message / ToolCall / AgentEvent
@@ -448,7 +475,7 @@ agent-pet-framework-cpp/
 ## 7. 已知边界 / Roadmap
 
 - **平台**：Windows 上自带 WinHTTP，可直接连 OpenAI 兼容接口；Linux/macOS 的核心、JSON 库、Agent 循环、Mock 模型均可用，HTTPS Provider 需自行接 libcurl 或实现 `ILLMProvider`。
-- **流式 token**：当前是“整段回复 + 事件流”，`ILLMProvider` 预留了扩展空间；下一步加 `chatStream`。
+- **流式回复**：已实现 `ILLMProvider::chatStream`；Windows OpenAI 兼容适配器解析服务端 SSE，通过 `assistant_delta` 输出文本增量。未重写该方法的自定义 Provider 使用完整回复回退，实际流式能力取决于服务端。
 - **MCP**：工具层已经支持任意 `ITool`，下一步加 `McpToolAdapter`（stdio JSON-RPC）。
 - **TTS/ASR**：核心只发事件，语音由前端或独立适配器消费。
 - **多用户/多进程**：JSON 适配器是单进程写锁；外部数据库适配器可实现行级并发。
@@ -461,13 +488,25 @@ agent-pet-framework-cpp/
 ```powershell
 .\build.ps1 -Tests
 # 或
-ctest --test-dir build --output-on-failure
+ctest --test-dir build -C Release --output-on-failure
 ```
 
-覆盖：JSON 解析/序列化、角色卡加载与覆盖、JSON 数据库持久化、记忆检索、Agent 工具闭环、策略拦截、文件沙箱越界、情绪衰减、注册表。
+当前自测程序包含 15 组测试，CTest 将其作为一个 `petcore_self_test` 执行。覆盖 JSON、角色卡、数据库持久化、记忆衰减与间隔强化、旧数据迁移、永久删除与重启、上下文防回流、角色隔离、Agent 工具闭环、策略拦截、文件沙箱、情绪衰减及注册表。记忆时间测试使用模拟时钟，无需等待真实天数，也不调用线上模型。
+
+## 9. GitHub 自动同步
+
+仓库提供 Windows 本地同步脚本；克隆仓库不会自动启动同步。安装 Git、登录 GitHub CLI 并配置 `origin` 后，可运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-github-sync.ps1
+# 停用同步及登录启动项
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-github-sync.ps1 -Disable
+```
+
+启用后每 15 秒检查一次，文件变更稳定至少 30 秒时自动提交、推送，Windows 登录时启动。自动提交不代表已经通过测试。遵守 `.gitignore`：本地配置、数据、构建产物等不上传；日志位于 `.git/github-sync.log`。连接、代理、分支切换和关闭方式见 [同步说明](docs/GITHUB_SYNC.md)。
 
 ---
 
-## 9. License
+## 10. License
 
-MIT（示例角色卡与美术占位符除外，见各文件 metadata）。
+项目自有代码使用 [MIT](LICENSE)。角色卡及模型、美术资源的权利与来源需单独确认；随仓库提供的 Live2D Cubism 组件适用其各自许可证，见 [Cubism](web/vendor/cubism5/LICENSE.md)、[Core](web/vendor/cubism5/Core/LICENSE.md) 和 [Framework](web/vendor/cubism5/Framework/LICENSE.md)。
