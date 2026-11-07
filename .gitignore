@@ -8,3 +8,8 @@ _tools/
 *.tmp
 *.exe
 *.obj
+.env
+.env.*
+!.env.example
+*.pem
+*.key
