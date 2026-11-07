@@ -1,5 +1,7 @@
 // Minimal dependency-free test runner for PetCore.
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
@@ -165,6 +167,167 @@ void testAgentLoop() {
     std::filesystem::remove_all(dir);
 }
 
+void testForgettingCurve() {
+    FactRecord fact;
+    fact.lastReviewedUnix = 1704067200;
+    const auto start = fact.lastReviewedUnix;
+    const long long day = 86400;
+    CHECK(memoryRetention(fact, start) == 1.0);
+    CHECK(std::abs(memoryRetention(fact, start + day) - 0.5) < 1e-9);
+    CHECK(memoryRetention(fact, start - day) == 1.0);
+    const double earlyLoss = memoryRetention(fact, start) - memoryRetention(fact, start + day);
+    const double laterLoss = memoryRetention(fact, start + day) - memoryRetention(fact, start + 2 * day);
+    CHECK(earlyLoss > laterLoss);
+    CHECK(memoryRetention(fact, start + 30 * day) < 0.05);
+    CHECK(reinforceMemory(fact, start + day));
+    CHECK(fact.halfLifeHours > 24.0);
+    CHECK(memoryRetention(fact, start + 2 * day) > 0.5);
+    CHECK(!reinforceMemory(fact, start + day + 3599));
+    CHECK(fact.reviewCount == 1);
+    for (int i = 2; i < 1000; ++i) reinforceMemory(fact, start + i * day);
+    CHECK(fact.halfLifeHours <= 8760.0);
+    fact.halfLifeHours = std::numeric_limits<double>::quiet_NaN();
+    CHECK(std::isfinite(memoryRetention(fact, start + 1000 * day)));
+    fact.lastReviewedUnix = 0;
+    fact.updatedAt = "2024-01-01T00:00:00Z";
+    CHECK(std::abs(memoryRetention(fact, start + day) - 0.5) < 1e-9);
+    fact.updatedAt = "invalid";
+    CHECK(memoryRetention(fact, start + day) == 1.0);
+}
+
+void testMemoryReviewAndRetrieval() {
+    long long now = 1704067200;
+    const auto clock = [&] { return now; };
+    JsonFileDatabase db("", false, clock);
+    MemoryService memory(db, 20, clock);
+    const std::string scope = "character:reimu";
+    memory.remember(scope, "tea old", "green", {});
+    now += 86400;
+    memory.remember(scope, "tea new", "black", {});
+    memory.remember("character:marisa", "tea other", "secret", {});
+    auto results = memory.recall(scope, "tea", 1);
+    CHECK(results.size() == 1 && results.front().key == "tea new");
+    CHECK(db.listFacts(scope)[1].reviewCount == 0); // unselected old memory
+    CHECK(memory.recall(scope, "missing").empty());
+    CHECK(memory.recall(scope, "tea", 0).empty());
+    now += 86400;
+    memory.recall(scope, "tea", 5, false); // prompt preview
+    memory.recall(scope, "   "); // browsing is not rehearsal
+    CHECK(db.listFacts(scope)[0].reviewCount == 0);
+    CHECK(db.listFacts(scope)[1].reviewCount == 0);
+    results = memory.recall(scope, "tea", 1);
+    CHECK(results.front().key == "tea new");
+    CHECK(results.front().reviewCount == 1);
+    CHECK(db.listFacts(scope)[0].halfLifeHours > 24.0);
+    CHECK(db.listFacts(scope)[1].reviewCount == 0);
+    memory.recall(scope, "tea", 1);
+    CHECK(db.listFacts(scope)[0].reviewCount == 1);
+    auto stale = db.listFacts(scope)[0];
+    now += 86400;
+    memory.remember(scope, "tea new", "oolong", {});
+    CHECK(!db.reviewFact(stale, now));
+    auto corrected = db.listFacts(scope)[0];
+    CHECK(corrected.reviewCount == 0 && corrected.halfLifeHours == 24.0);
+    CHECK(corrected.lastReviewedUnix == now);
+    now += 30 * 86400;
+    CHECK(memory.recall(scope, "tea").empty());
+    CHECK(db.listFacts(scope).size() == 2); // forgetting does not erase data
+    memory.remember(scope, "tea new", "oolong", {}); // explicit reminder revives it
+    results = memory.recall(scope, "tea");
+    CHECK(results.size() == 1 && results.front().value == "oolong");
+    CHECK(results.front().reviewCount == 1);
+    const auto current = results.front();
+    now += 86400;
+    CHECK(db.reviewFact(current, now));
+    CHECK(!db.reviewFact(current, now)); // stale concurrent review is rejected
+}
+
+void testMemoryDurabilityAndMigration() {
+    const auto dir = tempDir();
+    const auto path = (dir / "memory.json").string();
+    long long now = 1704153600; // one day after the legacy UTC timestamp
+    const auto clock = [&] { return now; };
+    util::writeFileAtomic(path, R"({"version":1,"facts":{"character:reimu":{"tea":{
+        "id":"old","key":"tea","value":"green","tags":[],
+        "created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}}}})");
+    double strength = 0;
+    {
+        JsonFileDatabase db(path, true, clock);
+        MemoryService memory(db, 20, clock);
+        const auto old = db.listFacts("character:reimu").front();
+        CHECK(old.reviewCount == 0);
+        CHECK(std::abs(memoryRetention(old, now) - 0.5) < 1e-9);
+        const auto recalled = memory.recall("character:reimu", "tea").front();
+        CHECK(recalled.reviewCount == 1);
+        strength = recalled.halfLifeHours;
+    }
+    {
+        JsonFileDatabase db(path, true, clock);
+        const auto fact = db.listFacts("character:reimu").front();
+        CHECK(fact.id == "old" && fact.value == "green");
+        CHECK(fact.reviewCount == 1 && fact.halfLifeHours == strength);
+        CHECK(fact.lastReviewedUnix == now);
+        CHECK(fact.updatedAt == "2024-01-01T00:00:00Z");
+    }
+    std::filesystem::remove_all(dir);
+}
+
+class MemoryProbeLLM final : public ILLMProvider {
+public:
+    std::string prompt;
+    bool fail = false;
+    std::string name() const override { return "memory-probe"; }
+    LLMResponse chat(const std::vector<Message>& messages, const json::Value&) override {
+        prompt = messages.front().content;
+        if (fail) throw std::runtime_error("test provider failure");
+        LLMResponse response;
+        response.content = "ok";
+        return response;
+    }
+};
+
+void testAutomaticMemoryContext() {
+    long long now = 1704067200;
+    const auto clock = [&] { return now; };
+    JsonFileDatabase db("", false, clock);
+    CharacterRegistry cards({PETCORE_TEST_CARDS_DIR});
+    SessionManager sessions(db, cards);
+    auto created = sessions.create("reimu");
+    MemoryService memory(db, 20, clock);
+    memory.remember("character:reimu", "tea", "UNIQUE_GREEN_TEA", {});
+    memory.remember("character:marisa", "tea", "OTHER_CHARACTER_SECRET", {});
+    now += 86400;
+    MemoryProbeLLM llm;
+    ToolRegistry tools;
+    AgentPolicy policy;
+    AgentLoop agent(llm, tools, memory, db, policy, 6, 6000);
+    llm.fail = true;
+    CHECK(agent.run(created.session, *created.card, "tea").stopReason == "llm_error");
+    CHECK(db.listFacts("character:reimu").front().reviewCount == 0);
+    llm.fail = false;
+    CHECK(agent.run(created.session, *created.card, "tea").stopReason == "completed");
+    CHECK(llm.prompt.find("UNIQUE_GREEN_TEA") != std::string::npos);
+    CHECK(llm.prompt.find("OTHER_CHARACTER_SECRET") == std::string::npos);
+    CHECK(db.listFacts("character:reimu").front().reviewCount == 1);
+    now += 86400;
+    AgentLoop smallBudget(llm, tools, memory, db, policy, 6, 100);
+    smallBudget.run(created.session, *created.card, "tea");
+    CHECK(llm.prompt.find("UNIQUE_GREEN_TEA") == std::string::npos);
+    CHECK(db.listFacts("character:reimu").front().reviewCount == 1);
+    policy.deny = {"recall"};
+    AgentLoop denied(llm, tools, memory, db, policy, 6, 6000);
+    denied.run(created.session, *created.card, "tea");
+    CHECK(llm.prompt.find("UNIQUE_GREEN_TEA") == std::string::npos);
+    CHECK(db.listFacts("character:reimu").front().reviewCount == 1);
+    auto sessionCard = *created.card;
+    sessionCard.memoryScope = "session";
+    agent.run(created.session, sessionCard, "tea");
+    CHECK(llm.prompt.find("UNIQUE_GREEN_TEA") == std::string::npos);
+    now += 60 * 86400;
+    agent.run(created.session, *created.card, "tea");
+    CHECK(llm.prompt.find("UNIQUE_GREEN_TEA") == std::string::npos);
+}
+
 void testCustomCharacters() {
     const auto dir = tempDir();
     const std::string path = (dir / "db.json").string();
@@ -258,6 +421,10 @@ int main() {
         {"json", testJson},
         {"characters", testCharacters},
         {"database+memory", testDatabaseAndMemory},
+        {"forgetting-curve", testForgettingCurve},
+        {"memory-retrieval+review", testMemoryReviewAndRetrieval},
+        {"memory-durability+migration", testMemoryDurabilityAndMigration},
+        {"automatic-memory-context", testAutomaticMemoryContext},
         {"custom-characters", testCustomCharacters},
         {"agent-loop", testAgentLoop},
         {"file-sandbox", testFileSandbox},
