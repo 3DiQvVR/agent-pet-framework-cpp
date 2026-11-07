@@ -22,6 +22,9 @@ struct SessionRecord {
     std::string createdAt;
     std::string updatedAt;
 
+    // Messages at/before this sequence remain visible in the archive only.
+    int memoryContextAfterSeq = 0;
+
     json::Value toJson() const;
     static SessionRecord fromJson(const json::Value& value);
 };
@@ -82,6 +85,9 @@ public:
     // Optional for external adapters: atomically reinforce an unchanged fact.
     // Legacy adapters still support time-based retrieval via updatedAt.
     virtual bool reviewFact(const FactRecord&, long long) { return false; }
+    // Delete expired facts and invalidate affected summaries/context atomically.
+    // External adapters opt in; the return value is the number of deleted facts.
+    virtual std::size_t pruneExpiredFacts(long long) { return 0; }
 
     // User-authored character cards. Built-in cards remain on disk; these
     // records are overlays/additions and can live in PostgreSQL/MySQL/etc.
@@ -125,6 +131,7 @@ public:
                     const std::string& value, const std::vector<std::string>& tags) override;
     std::vector<FactRecord> listFacts(const std::string& sessionId) override;
     bool reviewFact(const FactRecord& fact, long long now) override;
+    std::size_t pruneExpiredFacts(long long now) override;
 
     void upsertCharacter(const CharacterRecord& character) override;
     std::optional<CharacterRecord> getCharacter(const std::string& id) override;

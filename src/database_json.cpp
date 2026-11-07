@@ -6,6 +6,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <set>
 
 #include "petcore/errors.hpp"
 #include "petcore/memory.hpp"
@@ -65,6 +66,7 @@ json::Value SessionRecord::toJson() const {
         {"title", title},
         {"summary", summary},
         {"summary_upto", static_cast<double>(summaryUpto)},
+        {"memory_context_after_seq", memoryContextAfterSeq},
         {"state", state},
         {"created_at", createdAt},
         {"updated_at", updatedAt},
@@ -78,6 +80,7 @@ SessionRecord SessionRecord::fromJson(const json::Value& value) {
     session.title = util::jstr(value, "title");
     session.summary = util::jstr(value, "summary");
     session.summaryUpto = util::jint(value, "summary_upto", 0);
+    session.memoryContextAfterSeq = std::max(0, util::jint(value, "memory_context_after_seq", 0));
     if (const auto* state = value.find("state")) session.state = *state;
     session.createdAt = util::jstr(value, "created_at");
     session.updatedAt = util::jstr(value, "updated_at");
@@ -101,6 +104,38 @@ struct JsonFileDatabase::Impl {
     json::Value& messages() { return root["messages"]; }
     json::Value& facts() { return root["facts"]; }
     json::Value& characters() { return root["characters"]; }
+
+    std::size_t prune(long long now) {
+        std::size_t removed = 0;
+        std::set<std::string> affectedScopes;
+        for (auto& [scope, bucket] : facts().object()) {
+            if (!bucket.isObject()) continue;
+            for (auto it = bucket.object().begin(); it != bucket.object().end();) {
+                if (memoryExpired(factFromJson(scope, it->first, it->second), now)) {
+                    it = bucket.object().erase(it);
+                    affectedScopes.insert(scope);
+                    ++removed;
+                } else {
+                    ++it;
+                }
+            }
+        }
+        if (removed == 0) return 0;
+        for (auto& [id, value] : sessions().object()) {
+            auto session = SessionRecord::fromJson(value);
+            if (!affectedScopes.count(id) && !affectedScopes.count("character:" + session.characterId)) continue;
+            int lastSeq = session.memoryContextAfterSeq;
+            const auto* list = messages().find(id);
+            if (list && list->isArray()) {
+                for (const auto& item : list->array()) lastSeq = std::max(lastSeq, util::jint(item, "seq", 0));
+            }
+            session.summary.clear();
+            session.summaryUpto = std::max(session.summaryUpto, lastSeq);
+            session.memoryContextAfterSeq = lastSeq;
+            value = session.toJson();
+        }
+        return removed;
+    }
 
     void load() {
         if (!persist || path.empty() || !std::filesystem::exists(path)) return;
@@ -141,6 +176,7 @@ JsonFileDatabase::~JsonFileDatabase() {
 void JsonFileDatabase::initialize() {
     std::lock_guard<std::mutex> lock(impl_->mutex);
     if (impl_->persist && !impl_->path.empty()) util::ensureParentDirectory(impl_->path);
+    impl_->prune(impl_->clock());
     impl_->save();
 }
 
@@ -190,6 +226,14 @@ void JsonFileDatabase::updateSession(const SessionRecord& session) {
         throw DatabaseError("session not found: " + session.id);
     }
     SessionRecord updated = session;
+    const auto current = SessionRecord::fromJson(impl_->sessions()[session.id]);
+    if (updated.memoryContextAfterSeq < current.memoryContextAfterSeq) {
+        // An LLM summarization or emotion update may have started before GC.
+        // Never allow its stale snapshot to restore forgotten context.
+        updated.memoryContextAfterSeq = current.memoryContextAfterSeq;
+        updated.summary = current.summary;
+        updated.summaryUpto = current.summaryUpto;
+    }
     updated.updatedAt = util::nowIso();
     impl_->sessions()[updated.id] = updated.toJson();
     impl_->save();
@@ -261,6 +305,7 @@ void JsonFileDatabase::upsertFact(const std::string& sessionId, const std::strin
     if (!knownSession && !characterScope) {
         throw DatabaseError("session not found: " + sessionId);
     }
+    impl_->prune(impl_->clock());
     json::Value& bucket = impl_->facts()[sessionId];
     if (!bucket.isObject()) bucket = json::Value::object({});
 
@@ -298,6 +343,7 @@ void JsonFileDatabase::upsertFact(const std::string& sessionId, const std::strin
 
 std::vector<FactRecord> JsonFileDatabase::listFacts(const std::string& sessionId) {
     std::lock_guard<std::mutex> lock(impl_->mutex);
+    if (impl_->prune(impl_->clock()) > 0) impl_->save();
     std::vector<FactRecord> facts;
     const auto* bucket = impl_->facts().find(sessionId);
     if (!bucket || !bucket->isObject()) return facts;
@@ -314,6 +360,7 @@ bool JsonFileDatabase::reviewFact(const FactRecord& expected, long long now) {
     const auto* value = bucket->find(expected.key);
     if (!value) return false;
     auto fact = factFromJson(expected.sessionId, expected.key, *value);
+    if (memoryExpired(fact, now)) return false;
     // A stale retrieval must not strengthen subsequently corrected information.
     if (fact.id != expected.id || fact.value != expected.value || fact.updatedAt != expected.updatedAt ||
         fact.lastReviewedUnix != expected.lastReviewedUnix || fact.reviewCount != expected.reviewCount ||
@@ -322,6 +369,13 @@ bool JsonFileDatabase::reviewFact(const FactRecord& expected, long long now) {
     storeMemory((*bucket)[expected.key], fact);
     impl_->save();
     return true;
+}
+
+std::size_t JsonFileDatabase::pruneExpiredFacts(long long now) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    const auto removed = impl_->prune(now);
+    if (removed > 0) impl_->save();
+    return removed;
 }
 
 void JsonFileDatabase::upsertCharacter(const CharacterRecord& character) {

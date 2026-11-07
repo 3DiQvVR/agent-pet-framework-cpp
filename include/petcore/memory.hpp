@@ -25,6 +25,7 @@ public:
     std::vector<FactRecord> recall(const std::string& sessionId, const std::string& query,
                                    std::size_t limit = 5, bool reinforce = true) const;
     void review(const FactRecord& fact) const;
+    std::size_t pruneExpired() const;
 
     std::string summary(const std::string& sessionId) const;
 
@@ -46,5 +47,8 @@ int relevanceScore(const std::string& query, const FactRecord& fact);
 // Strength is bounded to 24 hours .. 365 days; reviews have a one-hour cooldown.
 double memoryRetention(const FactRecord& fact, long long now);
 bool reinforceMemory(FactRecord& fact, long long now);
+// Forget weak memories after 30 idle days, all memories after 180 idle days.
+// Todo records are application state and are excluded from this policy.
+bool memoryExpired(const FactRecord& fact, long long now);
 
 }  // namespace petcore

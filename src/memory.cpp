@@ -93,6 +93,15 @@ double memoryRetention(const FactRecord& fact, long long now) {
     return 1.0 / (1.0 + elapsedHours / halfLife(fact));
 }
 
+bool memoryExpired(const FactRecord& fact, long long now) {
+    if (fact.key.rfind("todo:", 0) == 0 ||
+        std::find(fact.tags.begin(), fact.tags.end(), "todo") != fact.tags.end()) return false;
+    const auto anchor = memoryAnchor(fact);
+    if (anchor <= 0 || now <= anchor) return false;
+    const double idleDays = (static_cast<double>(now) - static_cast<double>(anchor)) / 86400.0;
+    return idleDays >= 180.0 || (idleDays >= 30.0 && memoryRetention(fact, now) < 0.05);
+}
+
 bool reinforceMemory(FactRecord& fact, long long now) {
     if (now <= 0) return false;
     const auto anchor = memoryAnchor(fact);
@@ -127,7 +136,9 @@ MessageRecord MemoryService::record(const std::string& sessionId, Message messag
 std::vector<Message> MemoryService::history(const std::string& sessionId, int limit) const {
     const int effective = limit > 0 ? limit : historyLimit_;
     std::vector<Message> messages;
-    for (const auto& record : database_.getMessages(sessionId, static_cast<std::size_t>(effective), 0)) {
+    const auto session = database_.getSession(sessionId);
+    const int afterSeq = session ? session->memoryContextAfterSeq : 0;
+    for (const auto& record : database_.getMessages(sessionId, static_cast<std::size_t>(effective), afterSeq)) {
         messages.push_back(record.message);
     }
     return messages;
@@ -141,6 +152,7 @@ void MemoryService::remember(const std::string& sessionId, const std::string& ke
 std::vector<FactRecord> MemoryService::recall(const std::string& sessionId,
                                               const std::string& query,
                                               std::size_t limit, bool reinforce) const {
+    pruneExpired();
     if (limit == 0) return {};
     const auto now = clock_();
     const auto normalizedQuery = util::trim(query);
@@ -170,6 +182,10 @@ void MemoryService::review(const FactRecord& fact) const {
     database_.reviewFact(fact, clock_());
 }
 
+std::size_t MemoryService::pruneExpired() const {
+    return database_.pruneExpiredFacts(clock_());
+}
+
 std::string MemoryService::summary(const std::string& sessionId) const {
     const auto session = database_.getSession(sessionId);
     return session ? session->summary : "";
@@ -177,15 +193,16 @@ std::string MemoryService::summary(const std::string& sessionId) const {
 
 bool MemoryService::maybeSummarize(const std::string& sessionId, ILLMProvider& llm,
                                    int trigger, int keepRecent) {
+    pruneExpired();
     const auto session = database_.getSession(sessionId);
     if (!session) return false;
     const int total = database_.countMessages(sessionId);
-    if (total <= trigger || keepRecent < 0) return false;
+    if (total - session->memoryContextAfterSeq <= trigger || keepRecent < 0) return false;
 
     const int cutoff = total - keepRecent;
     if (cutoff <= session->summaryUpto) return false;
 
-    auto records = database_.getMessages(sessionId, 0, session->summaryUpto);
+    auto records = database_.getMessages(sessionId, 0, std::max(session->summaryUpto, session->memoryContextAfterSeq));
     std::ostringstream transcript;
     int lastSeq = session->summaryUpto;
     for (const auto& record : records) {

@@ -66,6 +66,7 @@ TurnResult AgentLoop::run(const SessionRecord& session, const CharacterCard& cha
         return result;
     }
 
+    memory_.pruneExpired();
     const MessageRecord userRecord = memory_.record(
         session.id, Message{"user", userText, {}, "", "", util::nowIso()});
     publish("user_message", json::Value::object({
@@ -82,7 +83,7 @@ TurnResult AgentLoop::run(const SessionRecord& session, const CharacterCard& cha
         return !util::matchesAny(character.toolsDeny, name);
     };
     std::string systemPrompt = character.buildSystemPrompt(
-        emotion.name, emotion.intensity, session.summary, util::nowIso(), replyStyle_);
+        emotion.name, emotion.intensity, memory_.summary(session.id), util::nowIso(), replyStyle_);
     if (static_cast<int>(systemPrompt.size()) > maxPromptChars_) {
         systemPrompt.resize(static_cast<std::size_t>(maxPromptChars_));
         systemPrompt += "\n…（设定已截断）";
