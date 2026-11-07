@@ -375,6 +375,152 @@ void testCustomCharacters() {
     std::filesystem::remove_all(dir);
 }
 
+void testPermanentForgettingPolicy() {
+    FactRecord fact;
+    fact.lastReviewedUnix = 1704067200;
+    const auto start = fact.lastReviewedUnix;
+    constexpr long long day = 86400;
+    CHECK(!memoryExpired(fact, start + 30 * day - 1));
+    CHECK(memoryExpired(fact, start + 30 * day));
+    fact.halfLifeHours = 48;
+    CHECK(!memoryExpired(fact, start + 30 * day));
+    CHECK(memoryExpired(fact, start + 39 * day));
+    fact.halfLifeHours = 8760;
+    CHECK(!memoryExpired(fact, start + 180 * day - 1));
+    CHECK(memoryExpired(fact, start + 180 * day));
+    CHECK(!memoryExpired(fact, start - day));
+    fact.tags = {"todo"};
+    CHECK(!memoryExpired(fact, start + 1000 * day));
+    fact.tags.clear();
+    fact.key = "todo:123";
+    CHECK(!memoryExpired(fact, start + 1000 * day));
+    fact.key = "tea";
+    fact.lastReviewedUnix = 0;
+    fact.updatedAt = "2024-01-01T00:00:00Z";
+    CHECK(memoryExpired(fact, start + 180 * day));
+    fact.updatedAt = "broken-date";
+    CHECK(!memoryExpired(fact, start + 180 * day));
+}
+
+void testPermanentForgettingStorage() {
+    const auto dir = tempDir();
+    const auto path = (dir / "forgetting.json").string();
+    long long now = 1704067200;
+    const auto clock = [&] { return now; };
+    std::string sessionId;
+    std::string otherId;
+    std::string renewedId;
+    {
+        JsonFileDatabase db(path, true, clock);
+        auto session = db.createSession("reimu", "forgetting");
+        sessionId = session.id;
+        auto other = db.createSession("marisa", "unrelated");
+        otherId = other.id;
+        other.summary = "UNRELATED_SUMMARY";
+        db.updateSession(other);
+        session.summary = "STALE_SUMMARY";
+        db.updateSession(session);
+        db.upsertFact(session.id, "old", "EXPIRED_VALUE", {});
+        db.upsertFact(session.id, "todo:task", "keep this task", {"todo"});
+        db.upsertFact(session.id, "renewed", "recently reinforced", {});
+        auto renewed = db.listFacts(session.id).back();
+        // Find by key instead of depending on adapter ordering.
+        for (const auto& fact : db.listFacts(session.id)) if (fact.key == "renewed") renewed = fact;
+        now += 29 * 86400;
+        CHECK(db.reviewFact(renewed, now));
+        now += 86400;
+        CHECK(db.pruneExpiredFacts(now) == 1);
+        CHECK(db.pruneExpiredFacts(now) == 0);
+        CHECK(db.listFacts(session.id).size() == 2);
+        CHECK(db.getSession(session.id)->summary.empty());
+        CHECK(db.getSession(other.id)->summary == "UNRELATED_SUMMARY");
+        // Even without message history (boundary == 0), stale snapshots cannot
+        // restore a summary that was invalidated by garbage collection.
+        db.updateSession(session);
+        CHECK(db.getSession(session.id)->summary.empty());
+        CHECK(db.getSession(session.id)->memoryContextVersion == 1);
+        const auto disk = json::Value::parse(util::readFile(path));
+        CHECK(!disk.at("facts").at(session.id).contains("old"));
+        db.upsertFact(session.id, "old", "newly supplied", {});
+        const auto relearned = db.listFacts(session.id).front();
+        CHECK(relearned.key == "old" && relearned.reviewCount == 0);
+        CHECK(relearned.halfLifeHours == 24 && relearned.lastReviewedUnix == now);
+        renewedId = relearned.id;
+    }
+    {
+        JsonFileDatabase db(path, true, clock);
+        db.initialize();
+        CHECK(db.listFacts(sessionId).front().id == renewedId);
+        CHECK(db.getSession(sessionId)->summary.empty());
+        CHECK(db.getSession(otherId)->summary == "UNRELATED_SUMMARY");
+        now += 180 * 86400;
+    }
+    {
+        // Startup cleanup persists even without a recall or a chat request.
+        JsonFileDatabase db(path, true, clock);
+        db.initialize();
+        const auto disk = json::Value::parse(util::readFile(path));
+        CHECK(disk.at("facts").at(sessionId).size() == 1);
+        CHECK(disk.at("facts").at(sessionId).contains("todo:task"));
+    }
+    std::filesystem::remove_all(dir);
+}
+
+void testForgottenContextDoesNotReturn() {
+    const auto dir = tempDir();
+    const auto path = (dir / "context.json").string();
+    long long now = 1704067200;
+    const auto clock = [&] { return now; };
+    std::string sessionId;
+    {
+        JsonFileDatabase db(path, true, clock);
+        CharacterRegistry cards({PETCORE_TEST_CARDS_DIR});
+        SessionManager sessions(db, cards);
+        auto created = sessions.create("reimu");
+        sessionId = created.session.id;
+        const auto sibling = sessions.create("reimu");
+        const auto unrelated = sessions.create("marisa");
+        MemoryService memory(db, 20, clock);
+        memory.remember("character:reimu", "tea", "FORGOTTEN_SECRET", {});
+        memory.record(sessionId, Message{"user", "FORGOTTEN_SECRET"});
+        memory.record(sibling.session.id, Message{"assistant", "FORGOTTEN_SECRET"});
+        auto staleSession = *db.getSession(sessionId);
+        staleSession.summary = "FORGOTTEN_SECRET";
+        db.updateSession(staleSession);
+        now += 30 * 86400;
+        MemoryProbeLLM llm;
+        ToolRegistry tools;
+        AgentPolicy policy;
+        AgentLoop agent(llm, tools, memory, db, policy, 6, 6000);
+        // Deliberately pass a pre-cleanup session snapshot.
+        agent.run(staleSession, *created.card, "NEW_CURRENT_QUESTION");
+        CHECK(llm.transcript.find("FORGOTTEN_SECRET") == std::string::npos);
+        CHECK(llm.transcript.find("NEW_CURRENT_QUESTION") != std::string::npos);
+        CHECK(db.listFacts("character:reimu").empty());
+        CHECK(db.getSession(sessionId)->memoryContextAfterSeq == 2);
+        CHECK(db.getSession(sibling.session.id)->memoryContextAfterSeq == 2);
+        CHECK(db.getSession(unrelated.session.id)->memoryContextAfterSeq == 0);
+        CHECK(memory.history(sibling.session.id).empty());
+        // The UI archive is still readable, but no longer used by the model.
+        CHECK(db.getMessages(sessionId, 0, 0)[1].message.content == "FORGOTTEN_SECRET");
+        db.updateSession(staleSession);
+        CHECK(memory.summary(sessionId).empty());
+        for (int i = 0; i < 6; ++i) memory.record(sessionId, Message{"user", "NEW_CONTEXT"});
+        CHECK(memory.maybeSummarize(sessionId, llm, 4, 2));
+        CHECK(llm.transcript.find("FORGOTTEN_SECRET") == std::string::npos);
+        CHECK(llm.transcript.find("NEW_CONTEXT") != std::string::npos);
+    }
+    {
+        JsonFileDatabase db(path, true, clock);
+        MemoryService memory(db, 20, clock);
+        CHECK(db.getSession(sessionId)->memoryContextAfterSeq == 2);
+        for (const auto& message : memory.history(sessionId)) {
+            CHECK(message.content.find("FORGOTTEN_SECRET") == std::string::npos);
+        }
+    }
+    std::filesystem::remove_all(dir);
+}
+
 void testFileSandbox() {
     const auto dir = tempDir();
     ToolRegistry tools;
@@ -428,6 +574,9 @@ int main() {
         {"memory-retrieval+review", testMemoryReviewAndRetrieval},
         {"memory-durability+migration", testMemoryDurabilityAndMigration},
         {"automatic-memory-context", testAutomaticMemoryContext},
+        {"permanent-forgetting-policy", testPermanentForgettingPolicy},
+        {"permanent-forgetting-storage", testPermanentForgettingStorage},
+        {"forgotten-context-does-not-return", testForgottenContextDoesNotReturn},
         {"custom-characters", testCustomCharacters},
         {"agent-loop", testAgentLoop},
         {"file-sandbox", testFileSandbox},
