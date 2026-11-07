@@ -22,3 +22,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-github-sync.
 ```
 
 日志：`.git/github-sync.log`（最多约 2 MB，保留一份轮转日志）。检查状态：`git status -sb`、`git log -3 --oneline`。在另一台电脑使用需要安装 Git、配置 GitHub 身份验证，然后运行启用命令。
+
+本机仓库已配置 GitHub HTTPS 代理 `http://127.0.0.1:7654`，与安装时的 Windows 系统代理一致。代理关闭或端口改变后，请更新本地 Git 配置：`git config --local http.https://github.com.proxy http://127.0.0.1:新端口`。不再需要代理时执行 `git config --local --unset http.https://github.com.proxy`。
+
+安装时发现的旧任务 `PetCore-Git-AutoBackup` 已停用，由当前同步进程接替；旧脚本和日志仍保留在 `.git/` 中。
