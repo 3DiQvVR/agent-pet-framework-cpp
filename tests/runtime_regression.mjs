@@ -82,7 +82,7 @@ try {
         assert.equal((await request(app.port, 'POST', '/api/characters', custom)).status, 200);
         const created = JSON.parse((await request(app.port, 'POST', '/api/sessions', {character_id: id})).text);
         sessions[scope] = created.session.id;
-        const chat = await request(app.port, 'POST', '/api/chat', {session_id: created.session.id, message: `记住 audit_key = ${scope}_value`});
+        const chat = await request(app.port, 'POST', '/api/chat', {session_id: created.session.id, message: `记住 audit_key 是 ${scope}_value`});
         assert.equal(parseDone(chat.text)?.stop_reason, 'completed');
         const facts = JSON.parse((await request(app.port, 'GET', `/api/memory?session_id=${created.session.id}`)).text).facts;
         assert(facts.some(fact => fact.value === `${scope}_value`));
@@ -103,7 +103,7 @@ try {
     for (const scope of ['character', 'session']) {
         const cli = launch(['chat', '--config', app.configPath, '--card', `test_${scope}`]);
         const exited = once(cli, 'exit');
-        cli.stdin.end(scope === 'character' ? '/memory\n/quit\n' : '记住 cli_key = cli_value\n/memory\n/quit\n');
+        cli.stdin.end(scope === 'character' ? '/memory\n/quit\n' : '记住 cli_key 是 cli_value\n/memory\n/quit\n');
         const timer = setTimeout(() => cli.kill(), 10000);
         await exited; clearTimeout(timer);
         assert.equal(cli.exitCode, 0, cli.output);
