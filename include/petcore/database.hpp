@@ -24,6 +24,7 @@ struct SessionRecord {
 
     // Messages at/before this sequence remain visible in the archive only.
     int memoryContextAfterSeq = 0;
+    int memoryContextVersion = 0;
 
     json::Value toJson() const;
     static SessionRecord fromJson(const json::Value& value);

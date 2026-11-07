@@ -67,6 +67,7 @@ json::Value SessionRecord::toJson() const {
         {"summary", summary},
         {"summary_upto", static_cast<double>(summaryUpto)},
         {"memory_context_after_seq", memoryContextAfterSeq},
+        {"memory_context_version", memoryContextVersion},
         {"state", state},
         {"created_at", createdAt},
         {"updated_at", updatedAt},
@@ -81,6 +82,7 @@ SessionRecord SessionRecord::fromJson(const json::Value& value) {
     session.summary = util::jstr(value, "summary");
     session.summaryUpto = util::jint(value, "summary_upto", 0);
     session.memoryContextAfterSeq = std::max(0, util::jint(value, "memory_context_after_seq", 0));
+    session.memoryContextVersion = std::max(0, util::jint(value, "memory_context_version", 0));
     if (const auto* state = value.find("state")) session.state = *state;
     session.createdAt = util::jstr(value, "created_at");
     session.updatedAt = util::jstr(value, "updated_at");
@@ -132,6 +134,7 @@ struct JsonFileDatabase::Impl {
             session.summary.clear();
             session.summaryUpto = std::max(session.summaryUpto, lastSeq);
             session.memoryContextAfterSeq = lastSeq;
+            if (session.memoryContextVersion < std::numeric_limits<int>::max()) ++session.memoryContextVersion;
             value = session.toJson();
         }
         return removed;
@@ -227,10 +230,12 @@ void JsonFileDatabase::updateSession(const SessionRecord& session) {
     }
     SessionRecord updated = session;
     const auto current = SessionRecord::fromJson(impl_->sessions()[session.id]);
-    if (updated.memoryContextAfterSeq < current.memoryContextAfterSeq) {
+    if (updated.memoryContextVersion != current.memoryContextVersion ||
+        updated.memoryContextAfterSeq < current.memoryContextAfterSeq) {
         // An LLM summarization or emotion update may have started before GC.
         // Never allow its stale snapshot to restore forgotten context.
         updated.memoryContextAfterSeq = current.memoryContextAfterSeq;
+        updated.memoryContextVersion = current.memoryContextVersion;
         updated.summary = current.summary;
         updated.summaryUpto = current.summaryUpto;
     }

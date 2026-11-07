@@ -231,11 +231,11 @@ void testMemoryReviewAndRetrieval() {
     CHECK(corrected.lastReviewedUnix == now);
     now += 30 * 86400;
     CHECK(memory.recall(scope, "tea").empty());
-    CHECK(db.listFacts(scope).size() == 2); // forgetting does not erase data
-    memory.remember(scope, "tea new", "oolong", {}); // explicit reminder revives it
+    CHECK(db.listFacts(scope).empty()); // permanent forgetting removes stored facts
+    memory.remember(scope, "tea new", "oolong", {}); // supplied again: a new memory
     results = memory.recall(scope, "tea");
     CHECK(results.size() == 1 && results.front().value == "oolong");
-    CHECK(results.front().reviewCount == 1);
+    CHECK(results.front().reviewCount == 0);
     const auto current = results.front();
     now += 86400;
     CHECK(db.reviewFact(current, now));
@@ -275,10 +275,13 @@ void testMemoryDurabilityAndMigration() {
 class MemoryProbeLLM final : public ILLMProvider {
 public:
     std::string prompt;
+    std::string transcript;
     bool fail = false;
     std::string name() const override { return "memory-probe"; }
     LLMResponse chat(const std::vector<Message>& messages, const json::Value&) override {
         prompt = messages.front().content;
+        transcript.clear();
+        for (const auto& message : messages) transcript += message.content + "\n";
         if (fail) throw std::runtime_error("test provider failure");
         LLMResponse response;
         response.content = "ok";
