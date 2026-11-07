@@ -11,6 +11,7 @@ try { $acquired = $mutex.WaitOne(0) } catch [System.Threading.AbandonedMutexExce
 if (-not $acquired) { $mutex.Dispose(); exit 0 }
 function Invoke-Git {
     param([string[]]$GitArgs)
+    $ErrorActionPreference = 'Continue'
     $result = & $git @GitArgs 2>&1
     if ($LASTEXITCODE -ne 0) { throw ($result -join "`n") }
     return ($result -join "`n")
