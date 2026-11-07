@@ -707,9 +707,11 @@
   }
 
   async function loadMemory() {
-    if (!state.card) return;
+    if (!state.card || !state.session) return;
+    const sessionId = state.session.id;
     try {
-      const data = await api(`/api/memory?character_id=${encodeURIComponent(state.card.id)}`);
+      const data = await api(`/api/memory?session_id=${encodeURIComponent(sessionId)}`);
+      if (!state.session || state.session.id !== sessionId) return;
       renderMemory(data.facts || []);
     } catch (_) {
       el.memory.innerHTML = '<div class="memory-empty">记忆加载失败</div>';

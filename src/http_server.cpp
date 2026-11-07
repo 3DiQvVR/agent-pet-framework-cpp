@@ -372,13 +372,20 @@ struct HttpServer::Impl {
                 return;
             }
             const std::filesystem::path relPath(relative);
-            if (relPath.is_absolute() || relative.find("..") != std::string::npos ||
+            if (relPath.has_root_path() || relative.find("..") != std::string::npos ||
                 relative.find(':') != std::string::npos || relative.size() > 512 ||
                 request.body.size() > 16 * 1024 * 1024) {
                 sendError(socket, 400, "invalid Live2D asset path or file size");
                 return;
             }
-            const auto target = std::filesystem::path(runtime.config().baseDir) / "data" / "live2d" / id / relPath;
+            std::filesystem::path target;
+            try {
+                target = util::confinedPath(std::filesystem::path(runtime.config().baseDir) / "data" / "live2d",
+                                           id + "/" + relative);
+            } catch (const std::exception&) {
+                sendError(socket, 400, "invalid Live2D asset path");
+                return;
+            }
             const std::string lowerName = util::toLowerAscii(relPath.filename().string());
             const std::string modelSuffix = ".model3.json";
             if (lowerName.size() >= modelSuffix.size() &&
@@ -605,10 +612,17 @@ struct HttpServer::Impl {
             std::string scope;
             if (query.count("scope")) {
                 scope = query.at("scope");
+            } else if (query.count("session_id")) {
+                try {
+                    const auto session = runtime.sessions().get(query.at("session_id"));
+                    const auto card = runtime.sessions().cardFor(session);
+                    scope = card->memoryScope == "session" ? session.id : "character:" + card->id;
+                } catch (const std::exception& error) {
+                    sendError(socket, 404, error.what());
+                    return;
+                }
             } else if (query.count("character_id")) {
                 scope = "character:" + query.at("character_id");
-            } else if (query.count("session_id")) {
-                scope = query.at("session_id");
             }
             if (scope.empty()) {
                 sendError(socket, 400, "scope, character_id or session_id is required");
@@ -683,9 +697,16 @@ struct HttpServer::Impl {
             sendError(socket, 400, "invalid path");
             return;
         }
-        const std::filesystem::path file = util::startsWith(path, "/live2d/")
-            ? std::filesystem::path(runtime.config().baseDir) / "data" / path.substr(1)
-            : std::filesystem::path(webRoot) / path.substr(path.empty() ? 0 : 1);
+        std::filesystem::path file;
+        try {
+            if (path.empty() || path.front() != '/') throw std::runtime_error("invalid path");
+            file = util::startsWith(path, "/live2d/")
+                ? util::confinedPath(std::filesystem::path(runtime.config().baseDir) / "data" / "live2d", path.substr(8))
+                : util::confinedPath(webRoot, path.substr(1));
+        } catch (const std::exception&) {
+            sendError(socket, 400, "invalid asset path");
+            return;
+        }
         std::error_code error;
         if (!std::filesystem::is_regular_file(file, error)) {
             sendError(socket, 404, "not found: " + path);

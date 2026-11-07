@@ -171,7 +171,9 @@ void printHistory(Runtime& runtime, const std::string& sessionId) {
 }
 
 void printMemory(Runtime& runtime, const std::string& sessionId) {
-    const auto facts = runtime.database().listFacts(sessionId);
+    const auto session = runtime.sessions().get(sessionId);
+    const auto card = runtime.sessions().cardFor(session);
+    const auto facts = runtime.database().listFacts(card->memoryScope == "session" ? sessionId : "character:" + card->id);
     if (facts.empty()) {
         std::cout << "（还没有长期记忆）\n";
         return;
