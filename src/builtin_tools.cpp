@@ -186,7 +186,7 @@ public:
     ToolSpec spec() const override {
         return ToolSpec{
             "recall",
-            "按关键词检索长期记忆。适用于用户问“你还记得……”时。",
+            "按关键词和当前保持度检索长期记忆；成功回忆会强化记忆，长期未复习的内容可能暂时遗忘。",
             makeSchema(
                 "{\"query\":{\"type\":\"string\"},"
                 "\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20}}",
@@ -197,6 +197,7 @@ public:
         const std::string query = requireString(args, "query");
         int limit = util::jint(args, "limit", 5);
         if (limit <= 0) limit = 5;
+        limit = std::min(limit, 20);
         const auto facts = context.memory->recall(factScope(context), query, static_cast<std::size_t>(limit));
         if (facts.empty()) return ToolResult::success("没有找到相关记忆。");
         std::ostringstream out;
