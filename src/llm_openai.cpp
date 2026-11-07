@@ -6,6 +6,7 @@
 #include <thread>
 
 #include "petcore/errors.hpp"
+#include "petcore/llm_stream.hpp"
 #include "petcore/util.hpp"
 
 #if defined(_WIN32) && !defined(PETCORE_NO_WINHTTP)
@@ -227,35 +228,16 @@ LLMResponse winHttpPostStream(const std::string& endpoint, const std::string& ap
             errorBody.append(errorChunk, std::min<std::size_t>(errorRead, 4096-errorBody.size()));
         throw LLMError("LLM HTTP " + std::to_string(status) + ": " + errorBody);
     }
-    LLMResponse result;
-    std::map<int, std::pair<ToolCall,std::string>> calls;
-    std::string pending; char chunk[4096]; DWORD got=0;
-    auto consumeLine = [&](std::string line) {
-        if (!line.empty() && line.back()=='\r') line.pop_back();
-        if (line.rfind("data:",0)!=0) return;
-        std::string data=util::trim(line.substr(5));
-        if (data.empty() || data=="[DONE]") return;
-        json::Value root;
-        try { root=json::Value::parse(data); } catch (...) { return; }
-        const auto* choices=root.find("choices"); if (!choices || !choices->isArray() || choices->empty()) return;
-        const auto* delta=choices->at(0).find("delta"); if (!delta) return;
-        const auto text=util::jstr(*delta,"content");
-        if (!text.empty()) { result.content+=text; if (onDelta) onDelta(text); }
-        const auto* toolChunks=delta->find("tool_calls");
-        if (toolChunks && toolChunks->isArray()) for (const auto& part:toolChunks->array()) {
-            const int index=static_cast<int>(util::jint(part,"index",0)); auto& entry=calls[index];
-            entry.first.id+=util::jstr(part,"id");
-            if (const auto* fn=part.find("function")) { entry.first.name+=util::jstr(*fn,"name"); entry.second+=util::jstr(*fn,"arguments"); }
-        }
-        if (const auto* usage=root.find("usage")) result.usage=*usage;
-    };
-    while (WinHttpReadData(request.get(),chunk,sizeof(chunk),&got) && got) {
-        pending.append(chunk,got); std::size_t nl;
-        while ((nl=pending.find('\n'))!=std::string::npos) { consumeLine(pending.substr(0,nl)); pending.erase(0,nl+1); }
+    detail::LLMStreamDecoder decoder(onDelta);
+    char chunk[4096];
+    while (!decoder.done()) {
+        DWORD got = 0;
+        if (!WinHttpReadData(request.get(), chunk, sizeof(chunk), &got))
+            throw LLMError(lastErrorText("failed while reading LLM stream"));
+        if (got == 0) break;
+        decoder.feed(std::string(chunk, got));
     }
-    if (!pending.empty()) consumeLine(pending);
-    for (auto& item:calls) { try { item.second.first.arguments=json::Value::parse(item.second.second); } catch (...) { item.second.first.arguments=json::Value::object({{"__raw__",item.second.second}}); } result.toolCalls.push_back(std::move(item.second.first)); }
-    return result;
+    return decoder.finish();
 }
 
 #else

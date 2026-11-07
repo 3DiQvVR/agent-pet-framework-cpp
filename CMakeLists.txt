@@ -24,6 +24,7 @@ set(PETCORE_SOURCES
     src/builtin_tools.cpp
     src/llm_mock.cpp
     src/llm_openai.cpp
+    src/llm_stream.cpp
     src/agent.cpp
     src/session.cpp
     src/runtime.cpp
