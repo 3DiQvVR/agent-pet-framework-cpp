@@ -364,7 +364,7 @@ public:
         std::ostringstream buffer;
         buffer << stream.rdbuf();
         std::string text = buffer.str();
-        if (text.size() > 65536) text = text.substr(0, 65536) + "\n…（已截断）";
+        text = util::truncateUtf8(text, 65536, "\n…（已截断）");
         return ToolResult::success(text, json::Value::object({{"path", path.string()}}));
     }
 

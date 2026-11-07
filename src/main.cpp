@@ -149,7 +149,7 @@ void printEvent(const CharacterCard& card, const AgentEvent& event) {
                   << event.data.at("arguments").dump() << "\n";
     } else if (event.type == "tool_result") {
         std::string content = petcore::util::jstr(event.data, "content");
-        if (content.size() > 300) content = content.substr(0, 300) + "…";
+        content = petcore::util::truncateUtf8(content, 300, "…");
         std::cout << "  · 结果 " << (petcore::util::jbool(event.data, "ok") ? "✓ " : "✗ ") << content
                   << "\n";
     } else if (event.type == "emotion") {

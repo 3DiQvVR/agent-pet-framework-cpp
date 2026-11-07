@@ -79,7 +79,7 @@ LLMResponse MockLLM::chat(const std::vector<Message>& messages, const json::Valu
 
     if (userText.find("【记忆压缩】") != std::string::npos) {
         std::string summary = userText;
-        if (summary.size() > 260) summary = summary.substr(0, 260) + "…";
+        summary = util::truncateUtf8(summary, 260, "…");
         return LLMResponse{"摘要：" + summary, {}, {}, {}};
     }
 
@@ -117,8 +117,8 @@ LLMResponse MockLLM::chat(const std::vector<Message>& messages, const json::Valu
         return LLMResponse{"",
                            {ToolCall{"call_remember",
                                      "remember",
-                                     json::Value::object({{"key", key.substr(0, 80)},
-                                                          {"value", value.substr(0, 500)},
+                                     json::Value::object({{"key", util::truncateUtf8(key, 80)},
+                                                          {"value", util::truncateUtf8(value, 500)},
                                                           {"tags", json::Value::array({"user"})}})}},
                            {},
                            {}};
@@ -129,7 +129,7 @@ LLMResponse MockLLM::chat(const std::vector<Message>& messages, const json::Valu
         return LLMResponse{"",
                            {ToolCall{"call_recall",
                                      "recall",
-                                     json::Value::object({{"query", userText.substr(0, 120)},
+                                     json::Value::object({{"query", util::truncateUtf8(userText, 120)},
                                                           {"limit", 5}})}},
                            {},
                            {}};

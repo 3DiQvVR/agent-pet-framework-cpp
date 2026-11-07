@@ -77,7 +77,7 @@ LLMResponse parseResponse(const std::string& body) {
     }
     const auto* choices = data.find("choices");
     if (!choices || !choices->isArray() || choices->empty()) {
-        throw LLMError("LLM response has no choices: " + body.substr(0, 300));
+        throw LLMError("LLM response has no choices: " + util::truncateUtf8(body, 300));
     }
     const auto* message = choices->at(0).find("message");
     if (!message || !message->isObject()) {
@@ -189,7 +189,7 @@ std::string winHttpPost(const std::string& endpoint, const std::string& apiKey,
     }
 
     if (status < 200 || status >= 300) {
-        throw LLMError("LLM HTTP " + std::to_string(status) + ": " + response.substr(0, 500));
+        throw LLMError("LLM HTTP " + std::to_string(status) + ": " + util::truncateUtf8(response, 500));
     }
     return response;
 }
