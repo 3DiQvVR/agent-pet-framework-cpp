@@ -197,7 +197,7 @@ public:
         const std::string query = requireString(args, "query");
         int limit = util::jint(args, "limit", 5);
         if (limit <= 0) limit = 5;
-        limit = std::min(limit, 20);
+        limit = (std::min)(limit, 20);
         const auto facts = context.memory->recall(factScope(context), query, static_cast<std::size_t>(limit));
         if (facts.empty()) return ToolResult::success("没有找到相关记忆。");
         std::ostringstream out;

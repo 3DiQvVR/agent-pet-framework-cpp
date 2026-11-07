@@ -1,5 +1,7 @@
 # 接入数据库
 
+长期事实的遗忘曲线、持久化字段和可选 `reviewFact` 适配器扩展见 [长期记忆说明](MEMORY.md)。
+
 PetCore 的持久化只依赖一个接口：`petcore::IDatabase`（见 `include/petcore/database.hpp`）。
 运行时通过 `DatabaseRegistry` 创建适配器，Agent、Web UI、角色卡注册表都不关心底层是文件、PostgreSQL 还是别的服务。
 
