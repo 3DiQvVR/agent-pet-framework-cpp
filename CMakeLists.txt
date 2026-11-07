@@ -13,6 +13,7 @@ endif()
 
 set(PETCORE_SOURCES
     src/json.cpp
+    src/files.cpp
     src/events.cpp
     src/config.cpp
     src/character.cpp

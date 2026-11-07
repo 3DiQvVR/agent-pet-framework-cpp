@@ -133,23 +133,21 @@ inline void ensureParentDirectory(const std::string& path) {
     }
 }
 
-inline void writeFileAtomic(const std::string& path, const std::string& content) {
-    ensureParentDirectory(path);
-    const std::string temporary = path + ".tmp";
-    {
-        std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
-        if (!stream) throw std::runtime_error("cannot open file for writing: " + temporary);
-        stream.write(content.data(), static_cast<std::streamsize>(content.size()));
-        stream.flush();
-        if (!stream) throw std::runtime_error("failed while writing: " + temporary);
-    }
-    std::error_code error;
-    std::filesystem::remove(path, error);
-    std::filesystem::rename(temporary, path, error);
-    if (error) {
-        std::filesystem::remove(temporary, error);
-        throw std::runtime_error("cannot replace file: " + path);
-    }
+void writeFileAtomic(const std::string& path, const std::string& content);
+
+// Resolve an untrusted relative asset name, rejecting rooted paths and escapes
+// through existing symlinks/junctions. Throws on invalid or inaccessible paths.
+std::filesystem::path confinedPath(const std::filesystem::path& root, const std::string& relative);
+
+// Limit UTF-8 text by bytes without splitting a code point. Marker fits inside
+// the same budget. Input is expected to be valid UTF-8.
+inline std::string truncateUtf8(const std::string& text, std::size_t budget,
+                                const std::string& marker = "") {
+    if (text.size() <= budget) return text;
+    const std::string suffix = marker.size() <= budget ? marker : "";
+    std::size_t end = budget - suffix.size();
+    while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) --end;
+    return text.substr(0, end) + suffix;
 }
 
 inline std::string resolvePath(const std::string& base, const std::string& value) {
