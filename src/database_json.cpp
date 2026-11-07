@@ -1,11 +1,14 @@
 #include "petcore/database.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <mutex>
 
 #include "petcore/errors.hpp"
+#include "petcore/memory.hpp"
 #include "petcore/util.hpp"
 
 namespace petcore {
@@ -25,6 +28,32 @@ std::vector<std::string> tagsFromJson(const json::Value& value) {
         }
     }
     return tags;
+}
+
+FactRecord factFromJson(const std::string& scope, const std::string& key, const json::Value& value) {
+    FactRecord fact;
+    fact.id = util::jstr(value, "id");
+    fact.sessionId = scope;
+    fact.key = key;
+    fact.value = util::jstr(value, "value");
+    if (const auto* tags = value.find("tags")) fact.tags = tagsFromJson(*tags);
+    fact.createdAt = util::jstr(value, "created_at");
+    fact.updatedAt = util::jstr(value, "updated_at");
+    const double reviewed = util::jdouble(value, "last_reviewed_unix", 0);
+    if (std::isfinite(reviewed) && reviewed > 0 && reviewed <= 253402300799.0)
+        fact.lastReviewedUnix = static_cast<long long>(reviewed);
+    const double strength = util::jdouble(value, "half_life_hours", 24);
+    fact.halfLifeHours = std::isfinite(strength) ? std::clamp(strength, 24.0, 8760.0) : 24.0;
+    const double count = util::jdouble(value, "review_count", 0);
+    if (std::isfinite(count) && count > 0)
+        fact.reviewCount = static_cast<int>(std::min(count, static_cast<double>(std::numeric_limits<int>::max())));
+    return fact;
+}
+
+void storeMemory(json::Value& value, const FactRecord& fact) {
+    value["last_reviewed_unix"] = static_cast<double>(fact.lastReviewedUnix);
+    value["half_life_hours"] = fact.halfLifeHours;
+    value["review_count"] = fact.reviewCount;
 }
 
 }  // namespace
@@ -59,6 +88,7 @@ struct JsonFileDatabase::Impl {
     std::string path;
     bool persist = true;
     mutable std::mutex mutex;
+    std::function<long long()> clock;
     json::Value root = json::Value::object({
         {"version", 1},
         {"sessions", json::Value::object({})},
@@ -93,10 +123,11 @@ struct JsonFileDatabase::Impl {
     }
 };
 
-JsonFileDatabase::JsonFileDatabase(std::string path, bool persist)
+JsonFileDatabase::JsonFileDatabase(std::string path, bool persist, std::function<long long()> clock)
     : impl_(std::make_unique<Impl>()) {
     impl_->path = std::move(path);
     impl_->persist = persist;
+    impl_->clock = clock ? std::move(clock) : util::nowUnix;
     impl_->load();
 }
 
@@ -236,6 +267,15 @@ void JsonFileDatabase::upsertFact(const std::string& sessionId, const std::strin
     const std::string now = util::nowIso();
     if (const auto* existing = bucket.find(key)) {
         json::Value updated = *existing;
+        auto fact = factFromJson(sessionId, key, *existing);
+        if (fact.value == value) {
+            reinforceMemory(fact, impl_->clock());
+        } else {
+            fact.lastReviewedUnix = impl_->clock();
+            fact.halfLifeHours = 24.0;
+            fact.reviewCount = 0;
+        }
+        storeMemory(updated, fact);
         updated["value"] = value;
         updated["tags"] = tagsToJson(tags);
         updated["updated_at"] = now;
@@ -248,6 +288,9 @@ void JsonFileDatabase::upsertFact(const std::string& sessionId, const std::strin
             {"tags", tagsToJson(tags)},
             {"created_at", now},
             {"updated_at", now},
+            {"last_reviewed_unix", static_cast<double>(impl_->clock())},
+            {"half_life_hours", 24.0},
+            {"review_count", 0},
         });
     }
     impl_->save();
@@ -259,17 +302,26 @@ std::vector<FactRecord> JsonFileDatabase::listFacts(const std::string& sessionId
     const auto* bucket = impl_->facts().find(sessionId);
     if (!bucket || !bucket->isObject()) return facts;
     for (const auto& [key, value] : bucket->object()) {
-        FactRecord fact;
-        fact.id = util::jstr(value, "id");
-        fact.sessionId = sessionId;
-        fact.key = key;
-        fact.value = util::jstr(value, "value");
-        if (const auto* tags = value.find("tags")) fact.tags = tagsFromJson(*tags);
-        fact.createdAt = util::jstr(value, "created_at");
-        fact.updatedAt = util::jstr(value, "updated_at");
-        facts.push_back(std::move(fact));
+        facts.push_back(factFromJson(sessionId, key, value));
     }
     return facts;
+}
+
+bool JsonFileDatabase::reviewFact(const FactRecord& expected, long long now) {
+    std::lock_guard<std::mutex> lock(impl_->mutex);
+    auto* bucket = impl_->facts().find(expected.sessionId);
+    if (!bucket || !bucket->isObject()) return false;
+    const auto* value = bucket->find(expected.key);
+    if (!value) return false;
+    auto fact = factFromJson(expected.sessionId, expected.key, *value);
+    // A stale retrieval must not strengthen subsequently corrected information.
+    if (fact.id != expected.id || fact.value != expected.value || fact.updatedAt != expected.updatedAt ||
+        fact.lastReviewedUnix != expected.lastReviewedUnix || fact.reviewCount != expected.reviewCount ||
+        fact.halfLifeHours != expected.halfLifeHours) return false;
+    if (!reinforceMemory(fact, now)) return false;
+    storeMemory((*bucket)[expected.key], fact);
+    impl_->save();
+    return true;
 }
 
 void JsonFileDatabase::upsertCharacter(const CharacterRecord& character) {

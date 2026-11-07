@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <iomanip>
+#include <limits>
 #include <set>
 #include <sstream>
 
@@ -57,7 +60,49 @@ std::string joinTags(const std::vector<std::string>& tags) {
     return util::join(tags, " ");
 }
 
+double halfLife(const FactRecord& fact) {
+    return std::isfinite(fact.halfLifeHours)
+        ? std::clamp(fact.halfLifeHours, 24.0, 8760.0) : 24.0;
+}
+
+long long memoryAnchor(const FactRecord& fact) {
+    if (fact.lastReviewedUnix > 0) return fact.lastReviewedUnix;
+    // Legacy JSON adapters have UTC timestamps but no review metadata.
+    const auto& stamp = fact.updatedAt.empty() ? fact.createdAt : fact.updatedAt;
+    if (stamp.size() != 20) return 0;
+    std::tm parsed{};
+    std::istringstream stream(stamp);
+    stream >> std::get_time(&parsed, "%Y-%m-%dT%H:%M:%SZ");
+    if (stream.fail()) return 0;
+#if defined(_WIN32)
+    const auto time = _mkgmtime64(&parsed);
+#else
+    const auto time = timegm(&parsed);
+#endif
+    char canonical[32];
+    std::strftime(canonical, sizeof(canonical), "%Y-%m-%dT%H:%M:%SZ", &parsed);
+    return time > 0 && stamp == canonical ? static_cast<long long>(time) : 0;
+}
+
 }  // namespace
+
+double memoryRetention(const FactRecord& fact, long long now) {
+    const auto anchor = memoryAnchor(fact);
+    if (anchor == 0 || now <= anchor) return 1.0;
+    const double elapsedHours = (static_cast<double>(now) - static_cast<double>(anchor)) / 3600.0;
+    return 1.0 / (1.0 + elapsedHours / halfLife(fact));
+}
+
+bool reinforceMemory(FactRecord& fact, long long now) {
+    if (now <= 0) return false;
+    const auto anchor = memoryAnchor(fact);
+    if (anchor > 0 && static_cast<double>(now) - static_cast<double>(anchor) < 3600.0) return false;
+    // Spaced retrieval gives more benefit; immediate repeats give none.
+    fact.halfLifeHours = std::min(8760.0, halfLife(fact) * (2.0 - memoryRetention(fact, now)));
+    fact.lastReviewedUnix = now;
+    if (fact.reviewCount < std::numeric_limits<int>::max()) ++fact.reviewCount;
+    return true;
+}
 
 int relevanceScore(const std::string& query, const FactRecord& fact) {
     if (query.empty()) return 1;
@@ -70,8 +115,9 @@ int relevanceScore(const std::string& query, const FactRecord& fact) {
     return score;
 }
 
-MemoryService::MemoryService(IDatabase& database, int historyLimit)
-    : database_(database), historyLimit_(historyLimit > 0 ? historyLimit : 20) {}
+MemoryService::MemoryService(IDatabase& database, int historyLimit, std::function<long long()> clock)
+    : database_(database), historyLimit_(historyLimit > 0 ? historyLimit : 20),
+      clock_(clock ? std::move(clock) : util::nowUnix) {}
 
 MessageRecord MemoryService::record(const std::string& sessionId, Message message) {
     if (message.createdAt.empty()) message.createdAt = util::nowIso();
@@ -94,22 +140,34 @@ void MemoryService::remember(const std::string& sessionId, const std::string& ke
 
 std::vector<FactRecord> MemoryService::recall(const std::string& sessionId,
                                               const std::string& query,
-                                              std::size_t limit) const {
+                                              std::size_t limit, bool reinforce) const {
+    if (limit == 0) return {};
+    const auto now = clock_();
+    const auto normalizedQuery = util::trim(query);
     std::vector<FactRecord> facts = database_.listFacts(sessionId);
-    std::vector<std::pair<int, FactRecord>> scored;
+    std::vector<std::pair<double, FactRecord>> scored;
     for (auto& fact : facts) {
-        const int score = relevanceScore(query, fact);
-        if (score > 0) scored.emplace_back(score, std::move(fact));
+        const int score = relevanceScore(normalizedQuery, fact);
+        const double retention = memoryRetention(fact, now);
+        if (score > 0 && retention >= 0.05) scored.emplace_back(score * retention, std::move(fact));
     }
     std::sort(scored.begin(), scored.end(), [](const auto& a, const auto& b) {
         if (a.first != b.first) return a.first > b.first;
-        return a.second.updatedAt > b.second.updatedAt;
+        if (a.second.updatedAt != b.second.updatedAt) return a.second.updatedAt > b.second.updatedAt;
+        return a.second.key < b.second.key;
     });
     std::vector<FactRecord> results;
     for (std::size_t i = 0; i < scored.size() && i < limit; ++i) {
+        if (reinforce && !normalizedQuery.empty()) {
+            if (database_.reviewFact(scored[i].second, now)) reinforceMemory(scored[i].second, now);
+        }
         results.push_back(std::move(scored[i].second));
     }
     return results;
+}
+
+void MemoryService::review(const FactRecord& fact) const {
+    database_.reviewFact(fact, clock_());
 }
 
 std::string MemoryService::summary(const std::string& sessionId) const {

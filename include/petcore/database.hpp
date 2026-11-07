@@ -40,6 +40,9 @@ struct FactRecord {
     std::vector<std::string> tags;
     std::string createdAt;
     std::string updatedAt;
+    long long lastReviewedUnix = 0;
+    double halfLifeHours = 24.0;
+    int reviewCount = 0;
 };
 
 // A user-authored character card stored as JSON. Keeping the payload opaque
@@ -76,6 +79,9 @@ public:
                             const std::string& value,
                             const std::vector<std::string>& tags) = 0;
     virtual std::vector<FactRecord> listFacts(const std::string& sessionId) = 0;
+    // Optional for external adapters: atomically reinforce an unchanged fact.
+    // Legacy adapters still support time-based retrieval via updatedAt.
+    virtual bool reviewFact(const FactRecord&, long long) { return false; }
 
     // User-authored character cards. Built-in cards remain on disk; these
     // records are overlays/additions and can live in PostgreSQL/MySQL/etc.
@@ -98,7 +104,8 @@ public:
 // atomically (temp file + rename) after every mutation.
 class JsonFileDatabase final : public IDatabase {
 public:
-    explicit JsonFileDatabase(std::string path, bool persist = true);
+    explicit JsonFileDatabase(std::string path, bool persist = true,
+                              std::function<long long()> clock = {});
     ~JsonFileDatabase() override;
 
     void initialize() override;
@@ -117,6 +124,7 @@ public:
     void upsertFact(const std::string& sessionId, const std::string& key,
                     const std::string& value, const std::vector<std::string>& tags) override;
     std::vector<FactRecord> listFacts(const std::string& sessionId) override;
+    bool reviewFact(const FactRecord& fact, long long now) override;
 
     void upsertCharacter(const CharacterRecord& character) override;
     std::optional<CharacterRecord> getCharacter(const std::string& id) override;
