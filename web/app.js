@@ -783,9 +783,18 @@
       case "error":
         toast(data.message || "Agent 出错");
         break;
-      case "done":
+      case "done": {
+        const partial = state.streamText;
         finishPendingStream();
+        if (data.stop_reason && data.stop_reason !== "completed" && data.stop_reason !== "empty_input") {
+          if (partial) partial.textContent += "\n（回复未完成）";
+          if (data.text) {
+            addMessage("assistant", data.text, state.card);
+            showBubble(data.text);
+          }
+        }
         break;
+      }
       default:
         break;
     }

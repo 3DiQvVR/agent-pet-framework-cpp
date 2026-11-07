@@ -131,6 +131,20 @@ try {
     await context.loadMemory(); assert.equal(rendered, undefined);
     console.log('[PASS] Web memory request uses active session');
 
+    const eventHandler = source.slice(source.indexOf('  function handleEvent(event)'), source.indexOf('  async function send(text)'));
+    const partial = {textContent: 'PARTIAL_TEXT'};
+    const displayed = [];
+    const eventContext = {state: {streamText: partial, card: {}},
+        finishPendingStream: () => { eventContext.state.streamText = null; },
+        addMessage: (role, text) => displayed.push(text), showBubble: () => {}};
+    vm.createContext(eventContext); vm.runInContext(eventHandler, eventContext);
+    eventContext.handleEvent({type: 'done', data: {stop_reason: 'llm_error', text: 'Connection failed'}});
+    assert(partial.textContent.includes('回复未完成'));
+    assert.deepEqual(displayed, ['Connection failed']);
+    eventContext.handleEvent({type: 'done', data: {stop_reason: 'completed', text: 'Duplicate'}});
+    assert.equal(displayed.length, 1);
+    console.log('[PASS] Web marks interrupted answers without duplicating successful ones');
+
     let mode = 'complete';
     const delta = 'data: {"choices":[{"delta":{"content":"PARTIAL_TEXT"}}]}\n\n';
     stub = http.createServer((req, res) => {
