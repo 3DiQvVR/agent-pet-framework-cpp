@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
@@ -15,6 +16,7 @@
 #include "petcore/errors.hpp"
 #include "petcore/json.hpp"
 #include "petcore/llm.hpp"
+#include "petcore/llm_stream.hpp"
 #include "petcore/memory.hpp"
 #include "petcore/session.hpp"
 #include "petcore/tools.hpp"
@@ -559,6 +561,189 @@ void testRegistries() {
     CHECK(std::find(providers.begin(), providers.end(), "mock") != providers.end());
 }
 
+template<class Action> bool fails(Action action) {
+    try { action(); } catch (const std::exception&) { return true; }
+    return false;
+}
+
+bool validUtf8(const std::string& text) {
+    for (std::size_t i = 0; i < text.size();) {
+        const auto c = static_cast<unsigned char>(text[i]);
+        const std::size_t count = c < 128 ? 1 : (c & 224) == 192 ? 2 : (c & 240) == 224 ? 3 : (c & 248) == 240 ? 4 : 0;
+        if (!count || i + count > text.size()) return false;
+        for (std::size_t j = 1; j < count; ++j)
+            if ((static_cast<unsigned char>(text[i + j]) & 192) != 128) return false;
+        i += count;
+    }
+    return true;
+}
+
+void testAssetConfinement() {
+    const auto dir = tempDir();
+    const auto root = dir / "assets";
+    std::filesystem::create_directories(root);
+    for (const auto& name : {"/outside.txt", "//server/share/file", "C:/outside.txt", "C:outside.txt",
+                             "\\outside.txt", "../outside.txt", "nested/../../outside.txt", "x:stream", "file. "})
+        CHECK(fails([&] { util::confinedPath(root, name); }));
+    CHECK(fails([&] { util::confinedPath(root, std::string("x\0y", 3)); }));
+    CHECK(util::confinedPath(root, "model/textures/图片.png") == std::filesystem::weakly_canonical(root / "model/textures/图片.png"));
+    std::filesystem::create_directories(dir / "outside");
+    std::error_code error;
+    std::filesystem::create_directory_symlink(dir / "outside", root / "link", error);
+    if (!error) CHECK(fails([&] { util::confinedPath(root, "link/file.txt"); }));
+    else std::cout << "[INFO] symlink setup unavailable: " << error.message() << "\n";
+    std::filesystem::remove_all(dir);
+}
+
+void testAtomicReplacement() {
+    const auto dir = tempDir();
+    const auto path = (dir / "db.json").string();
+    util::writeFileAtomic(path, "original");
+    util::writeFileAtomic(path, "replacement");
+    CHECK(util::readFile(path) == "replacement");
+    std::filesystem::create_directory(dir / "directory");
+    CHECK(fails([&] { util::writeFileAtomic((dir / "directory").string(), "must not replace directory"); }));
+    CHECK(std::filesystem::is_directory(dir / "directory"));
+#if defined(_WIN32)
+    {
+        std::ifstream held(path); // CRT handles do not share deletion on Windows
+        CHECK(fails([&] { util::writeFileAtomic(path, "candidate"); }));
+        CHECK(util::readFile(path) == "replacement");
+        bool candidateRetained = false;
+        for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+            if (entry.path().extension() == ".tmp" && util::readFile(entry.path().string()) == "candidate")
+                candidateRetained = true;
+        }
+        CHECK(candidateRetained);
+    }
+#endif
+    std::filesystem::remove_all(dir);
+}
+
+void testStreamCompletion() {
+    const std::string chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"你好🌱\"}}]}\r\n\r\n";
+    const std::string ending = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n";
+    std::string emitted;
+    detail::LLMStreamDecoder decoder([&](const auto& delta) { emitted += delta; });
+    const auto stream = chunk + ending + "data: {\"choices\":[],\"usage\":{\"total_tokens\":9}}\n\ndata: [DONE]\n\n";
+    for (const auto byte : stream) decoder.feed(std::string(1, byte));
+    const auto result = decoder.finish();
+    CHECK(result.content == "你好🌱" && emitted == result.content);
+    CHECK(util::jint(result.usage, "total_tokens") == 9);
+    detail::LLMStreamDecoder truncated({});
+    truncated.feed(chunk);
+    CHECK(fails([&] { truncated.finish(); }));
+    detail::LLMStreamDecoder noDone({});
+    noDone.feed(chunk + ending); // Some providers close after finish_reason.
+    CHECK(noDone.finish().content == "你好🌱");
+    detail::LLMStreamDecoder malformed({});
+    CHECK(fails([&] { malformed.feed("data: {bad}\n\n"); }));
+    detail::LLMStreamDecoder serverError({});
+    CHECK(fails([&] { serverError.feed("data: {\"error\":{\"message\":\"failed\"}}\n\n"); }));
+    const std::string tool = "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"echo\",\"arguments\":\"{\"}}]}}]}\n\n";
+    detail::LLMStreamDecoder incompleteTool({});
+    incompleteTool.feed(tool + "data: [DONE]\n\n");
+    CHECK(fails([&] { incompleteTool.finish(); }));
+    detail::LLMStreamDecoder completeTool({});
+    completeTool.feed(tool + "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n");
+    CHECK(completeTool.finish().toolCalls.front().arguments.isObject());
+}
+
+class BudgetProbe final : public ILLMProvider {
+public:
+    std::vector<std::vector<Message>> requests;
+    bool requestTool = false;
+    std::string name() const override { return "budget-probe"; }
+    LLMResponse chat(const std::vector<Message>& messages, const json::Value&) override {
+        requests.push_back(messages);
+        if (requestTool && requests.size() == 1)
+            return LLMResponse{"", {ToolCall{"big_call", "large_output", json::Value::object({})}}};
+        return LLMResponse{"ok"};
+    }
+};
+
+class LargeOutput final : public ITool {
+public:
+    ToolSpec spec() const override { return {"large_output", "test", json::Value::object({}), "read"}; }
+    ToolResult run(const json::Value&, ToolContext&) override {
+        std::string text;
+        for (int i = 0; i < 6000; ++i) text += "中";
+        return ToolResult::success(text);
+    }
+};
+
+void checkRequest(const std::vector<Message>& messages, std::size_t maximum) {
+    std::size_t cost = 0;
+    std::set<std::string> pending;
+    for (const auto& m : messages) {
+        CHECK(validUtf8(m.content));
+        cost += m.content.size() + 16 + m.name.size() + m.toolCallId.size();
+        if (m.role == "tool") CHECK(pending.erase(m.toolCallId) == 1);
+        else {
+            CHECK(pending.empty());
+            for (const auto& call : m.toolCalls) {
+                CHECK(pending.insert(call.id).second);
+                cost += call.arguments.dump().size() + call.name.size() + call.id.size();
+            }
+        }
+    }
+    CHECK(pending.empty());
+    CHECK(cost <= maximum);
+}
+
+void testChatContextBoundaries() {
+    JsonFileDatabase db("", false);
+    MemoryService memory(db);
+    ToolRegistry tools;
+    tools.registerTool(std::make_shared<LargeOutput>());
+    auto session = db.createSession("test", "test");
+    CharacterCard card;
+    card.id = "test"; card.name = "test"; card.historyLimit = 3;
+    memory.record(session.id, Message{"assistant", "", {ToolCall{"old", "echo"}}});
+    memory.record(session.id, Message{"tool", "result", {}, "old", "echo"});
+    memory.record(session.id, Message{"assistant", "previous reply"});
+    BudgetProbe probe;
+    AgentLoop agent(probe, tools, memory, db, AgentPolicy{}, 6, 6000);
+    CHECK(agent.run(session, card, "next question").stopReason == "completed");
+    checkRequest(probe.requests.back(), 6000);
+    CHECK(probe.requests.back()[1].role != "tool");
+    const auto before = probe.requests.size();
+    CHECK(agent.run(session, card, std::string(10000, 'x')).stopReason == "context_limit");
+    CHECK(probe.requests.size() == before);
+    // Complete multi-tool groups survive, but incomplete groups are omitted.
+    card.historyLimit = 20;
+    auto paired = db.createSession("test", "paired");
+    memory.record(paired.id, Message{"assistant", "", {ToolCall{"a", "echo"}, ToolCall{"b", "echo"}}});
+    memory.record(paired.id, Message{"tool", "a", {}, "a"});
+    memory.record(paired.id, Message{"tool", "b", {}, "b"});
+    agent.run(paired, card, "question");
+    checkRequest(probe.requests.back(), 6000);
+    CHECK(probe.requests.back()[1].toolCalls.size() == 2);
+    auto partial = db.createSession("test", "partial");
+    memory.record(partial.id, Message{"assistant", "", {ToolCall{"a", "echo"}, ToolCall{"b", "echo"}}});
+    memory.record(partial.id, Message{"tool", "a", {}, "a"});
+    agent.run(partial, card, "question");
+    checkRequest(probe.requests.back(), 6000);
+    CHECK(probe.requests.back().size() == 2);
+    auto large = db.createSession("test", "large");
+    BudgetProbe largeProbe; largeProbe.requestTool = true;
+    AgentLoop toolAgent(largeProbe, tools, memory, db, AgentPolicy{}, 6, 1300);
+    CHECK(toolAgent.run(large, card, "use tool").stopReason == "completed");
+    CHECK(largeProbe.requests.size() == 2);
+    for (const auto& request : largeProbe.requests) checkRequest(request, 1300);
+    for (int i = 0; i < 1000; ++i) card.systemPrompt += "中";
+    for (int budget = 100; budget <= 103; ++budget) {
+        AgentLoop tiny(probe, tools, memory, db, AgentPolicy{}, 6, budget);
+        CHECK(tiny.run(session, card, "q").stopReason == "completed");
+        checkRequest(probe.requests.back(), budget);
+    }
+    const std::string unicode = "a中文🌱z";
+    for (std::size_t i = 0; i <= unicode.size(); ++i) {
+        const auto text = util::truncateUtf8(unicode, i, "…");
+        CHECK(text.size() <= i && validUtf8(text));
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -582,6 +767,10 @@ int main() {
         {"file-sandbox", testFileSandbox},
         {"emotion", testEmotion},
         {"registries", testRegistries},
+        {"asset-confinement", testAssetConfinement},
+        {"atomic-replacement", testAtomicReplacement},
+        {"stream-completion", testStreamCompletion},
+        {"chat-context-boundaries", testChatContextBoundaries},
     };
 
     int failed = 0;
