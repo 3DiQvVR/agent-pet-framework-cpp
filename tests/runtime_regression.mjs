@@ -97,6 +97,13 @@ try {
     assert.equal(fs.readFileSync(path.join(dir, 'outside.txt'), 'utf8'), 'OUTSIDE_SENTINEL');
     assert.equal((await request(app.port, 'PUT', '/api/live2d/test_character/textures/ok.txt', 'ASSET_OK')).status, 200);
     assert.equal((await request(app.port, 'GET', '/live2d/test_character/textures/ok.txt')).text, 'ASSET_OK');
+    // Windows junctions need no symbolic-link privilege. Validate canonical
+    // containment through a real reparse point, using only our temporary files.
+    fs.symlinkSync(dir, path.join(dir, 'web/junction'), 'junction');
+    assert.equal((await request(app.port, 'GET', '/junction/outside.txt')).status, 400);
+    fs.symlinkSync(dir, path.join(dir, 'data/live2d/test_character/junction'), 'junction');
+    assert.equal((await request(app.port, 'PUT', '/api/live2d/test_character/junction/escape.txt', 'BAD')).status, 400);
+    assert(!fs.existsSync(path.join(dir, 'escape.txt')));
     console.log('[PASS] HTTP confinement, valid assets, and both memory scopes');
     await stop(app.proc);
 
@@ -119,6 +126,9 @@ try {
         renderMemory: facts => { rendered = facts; }, el: {memory: {innerHTML: ''}}};
     vm.createContext(context); vm.runInContext(loadMemory, context); await context.loadMemory();
     assert.equal(queried, '/api/memory?session_id=session-test'); assert.equal(rendered[0], 'scope-result');
+    rendered = undefined;
+    context.api = async () => { context.state.session = {id: 'switched'}; return {facts: ['stale']}; };
+    await context.loadMemory(); assert.equal(rendered, undefined);
     console.log('[PASS] Web memory request uses active session');
 
     let mode = 'complete';

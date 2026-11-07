@@ -417,6 +417,7 @@ runtime.chat(sessionId, "你好", [](const petcore::AgentEvent& event) {
 | GET | `/api/sessions` | 最近会话 |
 | GET | `/api/sessions/{id}` | 会话详情 + 消息 |
 | GET | `/api/memory?character_id=` | 长期记忆 |
+| GET | `/api/memory?session_id=` | 按该会话角色卡的记忆范围查询，供 Web/CLI 一致展示 |
 | POST | `/api/chat` | `{session_id,message}`，返回 SSE 事件流 |
 
 ---
@@ -491,7 +492,15 @@ agent-pet-framework-cpp/
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-当前自测程序包含 15 组测试，CTest 将其作为一个 `petcore_self_test` 执行。覆盖 JSON、角色卡、数据库持久化、记忆衰减与间隔强化、旧数据迁移、永久删除与重启、上下文防回流、角色隔离、Agent 工具闭环、策略拦截、文件沙箱、情绪衰减及注册表。记忆时间测试使用模拟时钟，无需等待真实天数，也不调用线上模型。
+当前自测程序包含 19 组测试，CTest 将其作为一个 `petcore_self_test` 执行。覆盖 JSON、角色卡、数据库持久化、记忆衰减与间隔强化、旧数据迁移、永久删除与重启、上下文防回流、角色隔离、Agent 工具闭环、策略拦截、文件沙箱、情绪衰减及注册表，并包含资源路径隔离、文件替换失败保护、流式完整性和上下文边界回归测试。记忆时间测试使用模拟时钟，无需等待真实天数，也不调用线上模型。
+
+安装 Node.js 的 Windows 开发环境还可执行端到端回归测试（替换为实际构建输出路径）：
+
+```powershell
+node tests/runtime_regression.mjs build/Release/petcore.exe
+```
+
+该测试启动隐藏的隔离进程和本地模拟模型，检查 HTTP 路径隔离、正常资源访问、CLI/Web 记忆范围、WinHTTP 断流处理；测试数据限于 `_petcore_test_tmp/`，完成后清理。修复说明见 [docs/BUG_FIXES.md](docs/BUG_FIXES.md)。
 
 ## 9. GitHub 自动同步
 

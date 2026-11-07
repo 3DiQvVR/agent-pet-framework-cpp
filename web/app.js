@@ -714,6 +714,7 @@
       if (!state.session || state.session.id !== sessionId) return;
       renderMemory(data.facts || []);
     } catch (_) {
+      if (!state.session || state.session.id !== sessionId) return;
       el.memory.innerHTML = '<div class="memory-empty">记忆加载失败</div>';
     }
   }
