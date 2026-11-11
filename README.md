@@ -160,6 +160,17 @@ $env:DEEPSEEK_API_KEY = "sk-..."
 
 `openai` / `deepseek` / `ollama` / `openrouter` / `qwen` / `lmstudio` 都走同一套 OpenAI 兼容协议；本地 Ollama 不需要 API Key。
 
+启动 Web UI 后，点击顶部的模型标签即可切换模型。弹窗会识别当前进程环境变量以及 Windows 用户/系统环境变量，并只显示 API Key 是否已设置，不会把密钥值发送到浏览器。除 `configured` 和 `mock` 外，预置配置还支持 `DEEPSEEK_*`、`OPENAI_*`、`OPENROUTER_*`、`QWEN_*`（或 `DASHSCOPE_API_KEY`）、`OLLAMA_*` 和 `LMSTUDIO_*` 变量，例如：
+
+```powershell
+$env:DEEPSEEK_MODEL = "deepseek-chat"
+$env:DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
+$env:DEEPSEEK_API_KEY = "sk-..."
+.\PetCore.exe ui
+```
+
+切换只影响当前运行进程；需要默认使用某个模型时，仍可在 `config.json` 或 `PETCORE_LLM_*` 环境变量中配置。
+
 ### 2.5 控制回复格式（`reply_style`）
 
 模型（尤其 DeepSeek）容易输出 Markdown 标题、编号列表和粗体。PetCore 用两层控制：
@@ -408,6 +419,8 @@ runtime.chat(sessionId, "你好", [](const petcore::AgentEvent& event) {
 |---|---|---|
 | GET | `/api/health` | 健康检查 |
 | GET | `/api/config` | 脱敏配置（模型、数据库、UI） |
+| GET | `/api/models` | 可用模型配置、当前选择及环境变量密钥状态（不返回密钥） |
+| POST | `/api/models` | `{profile,model,base_url}` 切换当前运行进程使用的模型 |
 | GET | `/api/tools` | 当前可用工具（名称、说明、风险级别） |
 | GET | `/api/characters` | 角色卡列表（含 source/editable） |
 | POST | `/api/characters` | 新建自定义角色卡 |
