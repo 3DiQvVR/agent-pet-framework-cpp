@@ -1,8 +1,9 @@
 #include "petcore/runtime.hpp"
 
-#include <utility>
+#include <algorithm>
 #include <array>
 #include <stdexcept>
+#include <utility>
 
 #include "petcore/util.hpp"
 
@@ -36,7 +37,8 @@ std::vector<Profile> profiles(const LLMConfig& configured) {
         profile.config.apiKeyEnv = profile.apiKeyEnv;
         profile.config.model = envValue(std::string(item.second) + "_MODEL");
         profile.config.baseUrl = envValue(std::string(item.second) + "_BASE_URL");
-        if (profile.id == "qwen" && profile.config.apiKey.empty()) {
+        if (profile.id == "qwen" && envValue(profile.apiKeyEnv).empty() &&
+            !envValue("DASHSCOPE_API_KEY").empty()) {
             profile.apiKeyEnv = "DASHSCOPE_API_KEY";
             profile.config.apiKeyEnv = profile.apiKeyEnv;
         }
@@ -67,16 +69,6 @@ Runtime::Runtime(AppConfig config)
     registerBuiltinTools(tools_, config_.tools.filesEnabled, config_.tools.workspace);
 
     rebuildAgent();
-    AgentPolicy policy;
-    policy.allow = {};
-    policy.deny = {};
-    policy.approvalRequired = config_.agent.approvalRequired;
-    policy.approvalHandler = [](const ToolCall&) {
-        // Headless default: tools listed in approval_required are denied until an
-        // embedding UI supplies its own handler.
-        return false;
-    };
-
     sessions_ = std::make_unique<SessionManager>(*database_, characters_);
 }
 
@@ -113,8 +105,7 @@ json::Value Runtime::modelSettings() const {
     std::lock_guard<std::mutex> lock(modelMutex_);
     json::Value items = json::Value::array({});
     for (const auto& profile : profiles(initialLLM_)) {
-        const bool keySet = !envValue(profile.apiKeyEnv).empty() ||
-                            (!profile.config.apiKey.empty() && profile.config.apiKeyEnv.empty());
+        const bool keySet = !profile.config.apiKey.empty() || !envValue(profile.apiKeyEnv).empty();
         items.push_back(json::Value::object({
             {"id", profile.id}, {"provider", profile.config.provider},
             {"model", profile.config.model}, {"base_url", profile.config.baseUrl},
@@ -128,13 +119,16 @@ json::Value Runtime::modelSettings() const {
 json::Value Runtime::publicConfig() const {
     std::lock_guard<std::mutex> lock(modelMutex_);
     auto result = config_.toPublicJson();
-    result["llm"]["provider"] = llm_->name();
-    result["llm"]["model"] = modelSettings().at("profiles").at(0).at("model");
+    result["llm"]["provider"] = config_.llm.provider;
+    result["llm"]["model"] = config_.llm.model;
+    result["llm"]["api_key_set"] = !config_.llm.apiKey.empty() ||
+                                      !envValue(config_.llm.apiKeyEnv).empty();
     return result;
 }
 
 void Runtime::switchModel(const json::Value& selection) {
     std::lock_guard<std::mutex> lock(modelMutex_);
+    if (!selection.isObject()) throw std::runtime_error("模型配置必须是 JSON 对象");
     const std::string profileId = util::jstr(selection, "profile");
     const auto available = profiles(initialLLM_);
     auto it = std::find_if(available.begin(), available.end(), [&](const Profile& profile) {
@@ -146,7 +140,8 @@ void Runtime::switchModel(const json::Value& selection) {
     const auto baseUrl = util::jstr(selection, "base_url", next.baseUrl);
     next.model = model;
     next.baseUrl = baseUrl;
-    next.apiKey = envValue(it->apiKeyEnv);
+    const std::string environmentKey = envValue(it->apiKeyEnv);
+    next.apiKey = environmentKey.empty() ? it->config.apiKey : environmentKey;
     next.apiKeyEnv = it->apiKeyEnv;
     validateModelConfig(next);
     auto replacement = LLMRegistry::create(next);
