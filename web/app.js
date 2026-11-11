@@ -12,6 +12,9 @@
     sessionList: $("sessionList"), sessionCount: $("sessionCount"),
     statusDot: $("statusDot"), statusText: $("statusText"),
     crumbName: $("crumbName"), modelBadge: $("modelBadge"),
+    modelModal: $("modelModal"), modelModalClose: $("modelModalClose"), modelCancel: $("modelCancel"),
+    modelProfile: $("modelProfile"), modelId: $("modelId"), modelBaseUrl: $("modelBaseUrl"),
+    modelEnvStatus: $("modelEnvStatus"), modelError: $("modelError"), modelApply: $("modelApply"),
     stage: $("stage"), pet: $("petAvatar"), petName: $("petName"),
     petTagline: $("petTagline"), emotionPill: $("emotionPill"), halo: $("halo"),
     bubble: $("bubble"), messages: $("messages"), typing: $("typing"),
@@ -49,6 +52,8 @@
     streamFinal: false,
     portraitData: "",
     live2dFiles: [],
+    modelSettings: null,
+    modelBusy: false,
   };
 
   const QUICK_PROMPTS = [
@@ -250,13 +255,86 @@
   async function loadConfig() {
     try {
       const config = await api("/api/config");
-      const label = config.llm.provider === config.llm.model
-        ? config.llm.provider
-        : `${config.llm.provider} · ${config.llm.model}`;
-      el.modelBadge.textContent = label;
       setStatus(true, "运行中");
     } catch (error) {
       setStatus(false, "服务未连接");
+    }
+  }
+
+  function activeModelLabel(settings) {
+    if (!settings) return "mock";
+    const active = (settings.profiles || []).find((profile) => profile.id === settings.active);
+    if (!active) return settings.active || "mock";
+    return active.provider === active.model ? active.provider : `${active.provider} · ${active.model}`;
+  }
+
+  function renderModelProfile() {
+    const settings = state.modelSettings;
+    const profiles = (settings && settings.profiles) || [];
+    const selected = el.modelProfile.value || (settings && settings.active) || "configured";
+    el.modelProfile.innerHTML = "";
+    for (const profile of profiles) {
+      const option = document.createElement("option");
+      option.value = profile.id;
+      option.textContent = `${profile.id} · ${profile.provider}${profile.model ? ` / ${profile.model}` : " / 未设置模型"}`;
+      el.modelProfile.appendChild(option);
+    }
+    el.modelProfile.value = profiles.some((profile) => profile.id === selected) ? selected : (profiles[0] && profiles[0].id) || "";
+    const profile = profiles.find((item) => item.id === el.modelProfile.value);
+    if (!profile) return;
+    el.modelId.value = profile.model || "";
+    el.modelBaseUrl.value = profile.base_url || "";
+    el.modelEnvStatus.textContent = profile.api_key_env
+      ? `${profile.api_key_env}：${profile.api_key_set ? "已识别" : "未设置"}（密钥不会显示）`
+      : "该配置无需 API 密钥";
+  }
+
+  async function loadModels() {
+    state.modelSettings = await api("/api/models");
+    el.modelBadge.textContent = activeModelLabel(state.modelSettings);
+    renderModelProfile();
+  }
+
+  async function openModelModal() {
+    el.modelError.textContent = "";
+    try {
+      await loadModels();
+      el.modelModal.classList.remove("hidden");
+      setTimeout(() => el.modelProfile.focus(), 60);
+    } catch (error) {
+      toast(`模型配置加载失败：${error.message}`);
+    }
+  }
+
+  function closeModelModal() {
+    if (state.modelBusy) return;
+    el.modelModal.classList.add("hidden");
+    el.modelError.textContent = "";
+  }
+
+  async function applyModel() {
+    if (state.modelBusy) return;
+    state.modelBusy = true;
+    el.modelApply.disabled = true;
+    el.modelError.textContent = "";
+    try {
+      state.modelSettings = await api("/api/models", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profile: el.modelProfile.value,
+          model: el.modelId.value.trim(),
+          base_url: el.modelBaseUrl.value.trim(),
+        }),
+      });
+      el.modelBadge.textContent = activeModelLabel(state.modelSettings);
+      el.modelModal.classList.add("hidden");
+      toast(`已切换到 ${el.modelBadge.textContent}`);
+    } catch (error) {
+      el.modelError.textContent = error.message;
+    } finally {
+      state.modelBusy = false;
+      el.modelApply.disabled = false;
     }
   }
 
@@ -893,6 +971,14 @@
       send();
     });
     el.newChatBtn.addEventListener("click", newChat);
+    el.modelBadge.addEventListener("click", openModelModal);
+    el.modelProfile.addEventListener("change", renderModelProfile);
+    el.modelModalClose.addEventListener("click", closeModelModal);
+    el.modelCancel.addEventListener("click", closeModelModal);
+    el.modelApply.addEventListener("click", applyModel);
+    el.modelModal.addEventListener("click", (event) => {
+      if (event.target === el.modelModal) closeModelModal();
+    });
     el.live2dDesktopBtn.addEventListener("click", () => {
       if (!state.card) return toast("请先选择聊天角色");
       launchDesktopPet(state.card);
@@ -915,6 +1001,7 @@
     });
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !el.cardModal.classList.contains("hidden")) closeCardForm();
+      if (event.key === "Escape" && !el.modelModal.classList.contains("hidden")) closeModelModal();
     });
   }
 
@@ -923,6 +1010,7 @@
     renderQuick();
     bind();
     await loadConfig();
+    try { await loadModels(); } catch (error) { toast(`模型配置加载失败：${error.message}`); }
     await loadTools();
     try {
       await loadCharacters();

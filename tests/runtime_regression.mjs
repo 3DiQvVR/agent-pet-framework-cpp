@@ -15,6 +15,8 @@ fs.mkdirSync(testRoot, {recursive: true});
 const dir = fs.mkdtempSync(path.join(testRoot, 'runtime_'));
 const env = {...process.env};
 for (const name of Object.keys(env)) if (name.startsWith('PETCORE_')) delete env[name];
+env.PETCORE_LLM_MODEL = 'env-model';
+env.PETCORE_LLM_API_KEY = 'SECRET_DO_NOT_PRINT';
 const processes = new Set();
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 function launch(args) {
@@ -71,6 +73,21 @@ try {
     fs.writeFileSync(path.join(dir, 'outside.txt'), 'OUTSIDE_SENTINEL');
     const app = await server(config, 'ui');
     assert.equal((await request(app.port, 'GET', '/')).text, 'STATIC_OK');
+    const models = await request(app.port, 'GET', '/api/models');
+    assert.equal(models.status, 200);
+    const modelSettings = JSON.parse(models.text);
+    const configured = modelSettings.profiles.find(profile => profile.id === 'configured');
+    assert.equal(modelSettings.active, 'configured');
+    assert.equal(configured.model, 'env-model');
+    assert.equal(configured.api_key_set, true);
+    assert(!models.text.includes('SECRET_DO_NOT_PRINT'));
+    const switched = await request(app.port, 'POST', '/api/models', {profile: 'mock', model: 'mock', base_url: ''});
+    assert.equal(switched.status, 200, switched.text);
+    assert.equal(JSON.parse(switched.text).active, 'mock');
+    const restored = await request(app.port, 'POST', '/api/models', {profile: 'configured', model: 'env-model', base_url: ''});
+    assert.equal(restored.status, 200, restored.text);
+    assert.equal(JSON.parse(restored.text).active, 'configured');
+    console.log('[PASS] model switching reads user environment and never returns API keys');
     const rooted = path.join(dir, 'outside.txt').replaceAll('\\', '/').replace(/^[A-Za-z]:/, '');
     for (const target of ['/' + rooted, '/%2f' + rooted.slice(1), '/..%2foutside.txt', '/%5coutside.txt'])
         assert.equal((await request(app.port, 'GET', target)).status, 400, target);

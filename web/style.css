@@ -311,6 +311,44 @@ body {
   font-size: 10px;
   letter-spacing: 0.02em;
 }
+.model-switch-button {
+  cursor: pointer;
+  font-family: inherit;
+}
+.model-switch-button:hover {
+  color: var(--text);
+  border-color: rgba(110, 168, 254, 0.55);
+  background: rgba(110, 168, 254, 0.12);
+}
+.model-modal-card { max-width: 620px; }
+.model-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.model-grid .wide { grid-column: 1 / -1; }
+.model-grid input, .model-grid select {
+  width: 100%;
+  margin-top: 6px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(5, 10, 20, 0.46);
+  color: var(--text);
+  font: inherit;
+}
+.model-grid input:focus, .model-grid select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(110, 168, 254, 0.12);
+}
+.model-env {
+  padding: 9px 10px;
+  border-radius: 9px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 12px;
+}
 .ghost {
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.04);
