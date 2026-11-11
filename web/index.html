@@ -53,7 +53,7 @@
       <header class="topbar">
         <div class="crumb">桌面 / <strong id="crumbName">未选择角色</strong></div>
         <div class="top-actions">
-          <span id="modelBadge" class="badge">mock</span>
+          <button id="modelBadge" class="badge model-switch-button" type="button" title="切换模型">mock</button>
           <label class="speed-control" title="调节回复在屏幕上的显示速度">
             <span>回复速度</span>
             <input id="replySpeed" type="range" min="8" max="100" step="4" value="36" aria-label="回复显示速度" />
@@ -108,6 +108,38 @@
   </div>
 
   <div id="toast" class="toast"></div>
+
+  <div id="modelModal" class="modal hidden">
+    <div class="modal-card glass model-modal-card">
+      <div class="modal-head">
+        <div>
+          <h2>切换模型</h2>
+          <p>模型密钥只从当前用户环境变量读取，页面不会显示或保存密钥。</p>
+        </div>
+        <button id="modelModalClose" class="icon-btn" type="button">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="model-grid">
+          <label class="wide">配置来源
+            <select id="modelProfile"></select>
+          </label>
+          <div id="modelEnvStatus" class="wide model-env"></div>
+          <label>模型 ID
+            <input id="modelId" autocomplete="off" maxlength="200" />
+          </label>
+          <label>接口地址
+            <input id="modelBaseUrl" type="url" autocomplete="off" placeholder="https://api.example.com/v1" />
+          </label>
+        </div>
+        <div id="modelError" class="form-error"></div>
+      </div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="modelCancel" class="ghost" type="button">取消</button>
+        <button id="modelApply" class="send" type="button">应用</button>
+      </div>
+    </div>
+  </div>
 
   <div id="cardModal" class="modal hidden">
     <div class="modal-card glass">
