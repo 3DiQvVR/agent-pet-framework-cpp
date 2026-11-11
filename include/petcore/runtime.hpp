@@ -59,6 +59,8 @@ private:
     std::unique_ptr<AgentLoop> agent_;
     std::unique_ptr<SessionManager> sessions_;
     EventBus events_;
+
+    void rebuildAgent();
 };
 
 }  // namespace petcore

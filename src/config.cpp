@@ -151,25 +151,25 @@ AppConfig AppConfig::load(const std::string& path) {
     }
 
     // Environment overrides (kept deliberately small and explicit).
-    if (const auto value = util::getEnv("PETCORE_LLM_PROVIDER"); !value.empty()) {
+    if (const auto value = util::userEnvironment("PETCORE_LLM_PROVIDER"); !value.empty()) {
         config.llm.provider = value;
     }
-    if (const auto value = util::getEnv("PETCORE_LLM_MODEL"); !value.empty()) {
+    if (const auto value = util::userEnvironment("PETCORE_LLM_MODEL"); !value.empty()) {
         config.llm.model = value;
     }
-    if (const auto value = util::getEnv("PETCORE_LLM_BASE_URL"); !value.empty()) {
+    if (const auto value = util::userEnvironment("PETCORE_LLM_BASE_URL"); !value.empty()) {
         config.llm.baseUrl = value;
     }
-    if (const auto value = util::getEnv("PETCORE_LLM_API_KEY"); !value.empty()) {
+    if (const auto value = util::userEnvironment("PETCORE_LLM_API_KEY"); !value.empty()) {
         config.llm.apiKey = value;
     }
     if (config.llm.apiKey.empty() && !config.llm.apiKeyEnv.empty()) {
-        config.llm.apiKey = util::getEnv(config.llm.apiKeyEnv);
+        config.llm.apiKey = util::userEnvironment(config.llm.apiKeyEnv);
     }
-    if (const auto value = util::getEnv("PETCORE_DATABASE_ADAPTER"); !value.empty()) {
+    if (const auto value = util::userEnvironment("PETCORE_DATABASE_ADAPTER"); !value.empty()) {
         config.database.adapter = value;
     }
-    if (const auto value = util::getEnv("PETCORE_DATABASE_PATH"); !value.empty()) {
+    if (const auto value = util::userEnvironment("PETCORE_DATABASE_PATH"); !value.empty()) {
         config.database.path = value;
     }
 
