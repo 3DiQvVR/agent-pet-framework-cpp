@@ -7,6 +7,30 @@
 
 namespace petcore::util {
 
+std::string userEnvironment(const std::string& name) {
+    if (const auto value = getEnv(name); !value.empty()) return value;
+#if defined(_WIN32)
+    const std::wstring wideName(name.begin(), name.end());
+    for (const auto root : {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE}) {
+        const wchar_t* subkey = root == HKEY_CURRENT_USER ? L"Environment" :
+            L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment";
+        DWORD bytes = 0;
+        if (RegGetValueW(root, subkey, wideName.c_str(), RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
+                        nullptr, nullptr, &bytes) != ERROR_SUCCESS || bytes > 65536) continue;
+        std::vector<wchar_t> value(bytes / sizeof(wchar_t) + 1, 0);
+        if (RegGetValueW(root, subkey, wideName.c_str(), RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ,
+                        nullptr, value.data(), &bytes) != ERROR_SUCCESS) continue;
+        const int size = WideCharToMultiByte(CP_UTF8, 0, value.data(), -1, nullptr, 0, nullptr, nullptr);
+        if (size <= 1) continue;
+        std::string result(static_cast<std::size_t>(size), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, value.data(), -1, result.data(), size, nullptr, nullptr);
+        result.pop_back();
+        return result;
+    }
+#endif
+    return {};
+}
+
 std::filesystem::path confinedPath(const std::filesystem::path& root, const std::string& relative) {
     if (relative.empty() || relative.find('\0') != std::string::npos ||
         relative.find(':') != std::string::npos || relative.find('\\') != std::string::npos)

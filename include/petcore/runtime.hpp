@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 
 #include "petcore/agent.hpp"
@@ -41,9 +42,15 @@ public:
                     const std::function<void(const AgentEvent&)>& emit = nullptr);
 
     void reloadCharacters();
+    json::Value modelSettings() const;
+    json::Value publicConfig() const;
+    void switchModel(const json::Value& selection);
 
 private:
     AppConfig config_;
+    LLMConfig initialLLM_;
+    mutable std::mutex modelMutex_;
+    std::string activeProfile_ = "configured";
     std::unique_ptr<IDatabase> database_;
     CharacterRegistry characters_;
     std::unique_ptr<ILLMProvider> llm_;

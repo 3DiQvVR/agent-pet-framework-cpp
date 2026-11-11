@@ -35,7 +35,7 @@ add_library(petcore_core STATIC ${PETCORE_SOURCES})
 target_include_directories(petcore_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 if(WIN32)
-    target_link_libraries(petcore_core PUBLIC winhttp ws2_32 dwmapi)
+    target_link_libraries(petcore_core PUBLIC winhttp ws2_32 dwmapi advapi32)
 endif()
 
 add_executable(petcore src/main.cpp)

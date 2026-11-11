@@ -118,6 +118,9 @@ inline std::string getEnv(const std::string& name, const std::string& fallback =
     return value ? std::string(value) : fallback;
 }
 
+// Process environment first, then persisted Windows user/system environment.
+std::string userEnvironment(const std::string& name);
+
 inline std::string readFile(const std::string& path) {
     std::ifstream stream(path, std::ios::binary);
     if (!stream) throw std::runtime_error("cannot open file for reading: " + path);
