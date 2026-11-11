@@ -420,7 +420,21 @@ struct HttpServer::Impl {
             return;
         }
         if (request.method == "GET" && path == "/api/config") {
-            sendJson(socket, 200, runtime.config().toPublicJson());
+            sendJson(socket, 200, runtime.publicConfig());
+            return;
+        }
+        if (request.method == "GET" && path == "/api/models") {
+            sendJson(socket, 200, runtime.modelSettings());
+            return;
+        }
+        if (request.method == "POST" && path == "/api/models") {
+            try {
+                const json::Value body = json::Value::parse(request.body.empty() ? "{}" : request.body);
+                runtime.switchModel(body);
+                sendJson(socket, 200, runtime.modelSettings());
+            } catch (const std::exception& error) {
+                sendError(socket, 400, error.what());
+            }
             return;
         }
         if (request.method == "GET" && path == "/api/tools") {
