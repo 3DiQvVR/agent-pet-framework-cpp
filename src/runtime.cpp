@@ -51,8 +51,9 @@ std::vector<Profile> profiles(const LLMConfig& configured) {
 void validateModelConfig(const LLMConfig& config) {
     if (config.model.empty() || config.model.size() > 200 || config.model.find('\n') != std::string::npos)
         throw std::runtime_error("模型 ID 不能为空，且不能超过 200 个字符");
-    if (config.provider == "mock" && config.baseUrl.empty()) return;
-    if (config.provider != "mock" && config.baseUrl.empty())
+    const bool isMock = util::toLowerAscii(config.provider) == "mock";
+    if (isMock && config.baseUrl.empty()) return;
+    if (!isMock && config.baseUrl.empty())
         throw std::runtime_error("该 Provider 缺少接口地址，请设置环境变量或在页面填写");
     if (config.baseUrl.size() > 2048 || config.baseUrl.find_first_of("\r\n?#") != std::string::npos ||
         (config.baseUrl.rfind("http://", 0) != 0 && config.baseUrl.rfind("https://", 0) != 0))
