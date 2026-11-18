@@ -1,0 +1,8 @@
+**
+!cards
+!cards/*.json
+!migration
+!migration/service
+!migration/service/*.py
+!migration/service/schema.sql
+!migration/requirements.txt

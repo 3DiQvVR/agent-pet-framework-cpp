@@ -1,0 +1,34 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: petcore
+      POSTGRES_DB: petcore
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a random URL-safe database password}
+    volumes:
+      - petdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U petcore"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+  api:
+    build:
+      context: ..
+      dockerfile: migration/service/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://petcore:${POSTGRES_PASSWORD}@db/petcore
+      INVITES_JSON: ${INVITES_JSON:?set distinct random invite codes}
+      LLM_MODEL: ${LLM_MODEL:-mock}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      DAILY_TURNS: ${DAILY_TURNS:-100}
+  web:
+    build: web
+    depends_on: [api]
+    ports: ["127.0.0.1:3000:3000"]
+volumes:
+  petdata:
